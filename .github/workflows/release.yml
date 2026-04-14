@@ -1,0 +1,137 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version (without v-prefix)
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    outputs:
+      version: ${{ steps.vars.outputs.version }}
+      sha256: ${{ steps.dmg.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: vars
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ "$REF_NAME" == v* ]]; then
+            VERSION="${REF_NAME#v}"
+          else
+            VERSION="$INPUT_VERSION"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Import signing certificate
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+        run: |
+          KEYCHAIN_PASSWORD=$(openssl rand -hex 16)
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          echo "$CSC_LINK" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN_PATH" \
+            -P "$CSC_KEY_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" > /dev/null
+          security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychain -d user | xargs)
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+      - name: Build, sign, notarize, DMG
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          BUILD_VERSION: ${{ steps.vars.outputs.version }}
+        run: |
+          ./scripts/build-app.sh "$BUILD_VERSION" --notarize --dmg
+
+      - id: dmg
+        env:
+          BUILD_VERSION: ${{ steps.vars.outputs.version }}
+        run: |
+          DMG="dist/Lesepult-${BUILD_VERSION}-arm64.dmg"
+          SHA=$(shasum -a 256 "$DMG" | awk '{print $1}')
+          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUILD_VERSION: ${{ steps.vars.outputs.version }}
+        run: |
+          TAG="v${BUILD_VERSION}"
+          DMG="dist/Lesepult-${BUILD_VERSION}-arm64.dmg"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" "$DMG" \
+              --title "Lesepult ${BUILD_VERSION}" \
+              --generate-notes
+          else
+            gh release upload "$TAG" "$DMG" --clobber
+          fi
+
+  update-cask:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout homebrew-tap
+        uses: actions/checkout@v4
+        with:
+          repository: sebastian-breitzke/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+
+      - name: Render and commit cask
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          SHA256: ${{ needs.build.outputs.sha256 }}
+        run: |
+          mkdir -p Casks
+          cat > Casks/lesepult.rb <<CASKEOF
+          cask "lesepult" do
+            version "${VERSION}"
+            sha256 "${SHA256}"
+
+            url "https://github.com/sebastian-breitzke/lesepult/releases/download/v#{version}/Lesepult-#{version}-arm64.dmg"
+            name "Lesepult"
+            desc "Minimal Markdown reader with Tufte-style typography"
+            homepage "https://github.com/sebastian-breitzke/lesepult"
+
+            depends_on macos: ">= :sonoma"
+            depends_on arch: :arm64
+
+            app "Lesepult.app"
+
+            zap trash: [
+              "~/Library/Application Support/de.s16e.lesepult",
+              "~/Library/Preferences/de.s16e.lesepult.plist",
+              "~/Library/Saved Application State/de.s16e.lesepult.savedState",
+            ]
+          end
+          CASKEOF
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A Casks/lesepult.rb
+          git diff --cached --quiet && exit 0
+          git commit -m "Update lesepult to ${VERSION}"
+          git push origin HEAD:main
