@@ -38,14 +38,18 @@ echo "==> bun install"
 cd "$ROOT"
 bun install --frozen-lockfile
 
-# 2. Build with Tauri
+# 2. Build with Tauri (explicitly request app bundle)
 echo "==> tauri build"
-bun run tauri build 2>&1
+bun run tauri build --bundles app 2>&1
 
-if [[ ! -d "$TAURI_APP" ]]; then
-    echo "ERROR: .app not found at $TAURI_APP" >&2
+# Find the .app — path varies depending on target triple
+TAURI_APP=$(find "$ROOT/src-tauri/target" -path "*/release/bundle/macos/$APP_NAME.app" -type d 2>/dev/null | head -1)
+if [[ -z "$TAURI_APP" || ! -d "$TAURI_APP" ]]; then
+    echo "ERROR: .app bundle not found. Contents of target/release/bundle/:" >&2
+    find "$ROOT/src-tauri/target" -path "*/release/bundle/*" -maxdepth 6 2>/dev/null >&2 || true
     exit 1
 fi
+echo "==> Found: $TAURI_APP"
 
 # 3. Copy to dist/
 echo "==> Assembling $APP_NAME.app"
