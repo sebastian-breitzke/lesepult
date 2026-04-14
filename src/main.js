@@ -148,9 +148,21 @@ listen("tauri://drag-drop", async (event) => {
   }
 });
 
+// ─── macOS file association (open-with) ──────────────────
+
+async function openPath(path) {
+  try {
+    const r = await invoke("read_file_at_path", { path });
+    render(r.name, r.content, r.path);
+  } catch (_) {}
+}
+
 // ─── Init ────────────────────────────────────────────────
 
 (async () => {
+  // Register open-file listener BEFORE checking initial file
+  await listen("open-file", (event) => openPath(event.payload));
+
   try {
     const r = await invoke("get_initial_file");
     if (r) return render(r.name, r.content, r.path);

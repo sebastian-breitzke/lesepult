@@ -9,6 +9,14 @@
     "beforeBuildCommand": "bun run build"
   },
   "bundle": {
+    "fileAssociations": [
+      {
+        "ext": ["md", "markdown"],
+        "mimeType": "text/markdown",
+        "role": "Viewer",
+        "description": "Markdown Document"
+      }
+    ],
     "icon": [
       "icons/icon-32.png",
       "icons/icon-128.png",

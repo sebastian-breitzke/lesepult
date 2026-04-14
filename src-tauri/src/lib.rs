@@ -1,5 +1,6 @@
 use serde::Serialize;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 #[derive(Serialize)]
 struct FileResult {
@@ -36,18 +37,24 @@ fn read_file_at_path(path: String) -> Result<FileResult, String> {
     read_md(&PathBuf::from(&path)).ok_or_else(|| format!("Cannot read {path}"))
 }
 
+struct PendingFile(Mutex<Option<String>>);
+
 #[tauri::command]
-fn get_initial_file() -> Option<FileResult> {
+fn get_initial_file(state: tauri::State<PendingFile>) -> Option<FileResult> {
+    // Check path stored by RunEvent::Opened (macOS file association)
+    if let Some(path) = state.0.lock().unwrap().take() {
+        let p = PathBuf::from(&path);
+        if p.exists() {
+            return read_md(&p);
+        }
+    }
+    // Fallback: CLI args
     std::env::args()
         .skip(1)
         .find(|a| a.ends_with(".md") || a.ends_with(".markdown"))
         .and_then(|a| {
             let p = PathBuf::from(&a);
-            if p.exists() {
-                read_md(&p)
-            } else {
-                None
-            }
+            if p.exists() { read_md(&p) } else { None }
         })
 }
 
@@ -156,13 +163,33 @@ async fn share_file(app: tauri::AppHandle, path: String) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    use tauri::{Emitter, Manager, RunEvent};
+
+    let app = tauri::Builder::default()
+        .manage(PendingFile(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             open_file_dialog,
             read_file_at_path,
             get_initial_file,
             share_file,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Lesepult");
+        .build(tauri::generate_context!())
+        .expect("error while building Lesepult");
+
+    app.run(|handle, event| {
+        if let RunEvent::Opened { urls } = event {
+            for url in &urls {
+                if let Ok(path) = url.to_file_path() {
+                    let path_str = path.to_string_lossy().to_string();
+                    // Store for get_initial_file (cold launch)
+                    if let Some(state) = handle.try_state::<PendingFile>() {
+                        *state.0.lock().unwrap() = Some(path_str.clone());
+                    }
+                    // Emit for frontend (warm launch / already loaded)
+                    let _ = handle.emit("open-file", &path_str);
+                    break;
+                }
+            }
+        }
+    });
 }
