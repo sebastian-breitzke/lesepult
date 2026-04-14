@@ -1,0 +1,316 @@
+@import "@fontsource-variable/fraunces/opsz.css";
+@import "@fontsource/ibm-plex-mono/400.css";
+
+:root {
+  --lp-bg: #fffff8;
+  --lp-ink: #111;
+  --lp-ink-dim: #555;
+  --lp-ink-mute: #999;
+  --lp-line: #e0ddd5;
+  --lp-accent: #a00000;
+  --lp-code-bg: rgba(0, 0, 0, 0.035);
+  --lp-btn-bg: rgba(0, 0, 0, 0.05);
+  --lp-btn-hover: rgba(0, 0, 0, 0.1);
+  --lp-font-body: Palatino, "Palatino Linotype", "Book Antiqua", Georgia, serif;
+  --lp-font-display: "Fraunces Variable", "Fraunces", Georgia, serif;
+  --lp-font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --lp-bg: #1a1714;
+    --lp-ink: #e8e2d6;
+    --lp-ink-dim: #a09888;
+    --lp-ink-mute: #706860;
+    --lp-line: rgba(232, 226, 214, 0.12);
+    --lp-accent: #d9a24c;
+    --lp-code-bg: rgba(255, 255, 255, 0.04);
+    --lp-btn-bg: rgba(255, 255, 255, 0.06);
+    --lp-btn-hover: rgba(255, 255, 255, 0.12);
+    color-scheme: dark;
+  }
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html {
+  font-size: 15px;
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--lp-bg);
+  color: var(--lp-ink);
+  font-family: var(--lp-font-body);
+  line-height: 1.7;
+}
+
+/* ─── Article ─────────────────────────────────────── */
+.article {
+  max-width: 700px;
+  margin: 0 auto;
+  padding: 80px 24px 160px;
+}
+
+.article-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-family: var(--lp-font-mono);
+  font-size: 0.72rem;
+  color: var(--lp-ink-mute);
+  letter-spacing: 0.06em;
+  margin-bottom: 3rem;
+  padding-bottom: 1.5rem;
+  border-bottom: 1px solid var(--lp-line);
+}
+
+.meta-filename {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.meta-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.meta-btn {
+  font-family: var(--lp-font-mono);
+  font-size: 0.8rem;
+  background: var(--lp-btn-bg);
+  border: 1px solid var(--lp-line);
+  border-radius: 4px;
+  color: var(--lp-ink-mute);
+  cursor: pointer;
+  padding: 3px 8px;
+  transition: background 0.15s, color 0.15s;
+  line-height: 1;
+}
+
+.meta-btn:hover {
+  background: var(--lp-btn-hover);
+  color: var(--lp-ink-dim);
+}
+
+.meta-btn.flashed {
+  color: var(--lp-accent);
+}
+
+/* ─── Typography ──────────────────────────────────── */
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--lp-font-display);
+  font-weight: 600;
+  line-height: 1.15;
+  margin-top: 2.5rem;
+  margin-bottom: 0.6rem;
+}
+
+h1 {
+  font-size: 2.4rem;
+  font-variation-settings: "opsz" 96;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+}
+
+h2 {
+  font-size: 1.6rem;
+  font-variation-settings: "opsz" 48;
+}
+
+h3 {
+  font-size: 1.25rem;
+  font-variation-settings: "opsz" 36;
+}
+
+h4 {
+  font-size: 1.05rem;
+  font-variation-settings: "opsz" 24;
+  font-weight: 500;
+  font-style: italic;
+}
+
+p { margin: 0 0 1.2rem; }
+
+.content > p:first-child {
+  font-size: 1.1rem;
+  line-height: 1.65;
+}
+
+strong { font-weight: 600; }
+
+/* ─── Links ───────────────────────────────────────── */
+a {
+  color: var(--lp-ink);
+  text-decoration: underline;
+  text-decoration-color: var(--lp-ink-mute);
+  text-underline-offset: 3px;
+  transition: text-decoration-color 0.15s;
+}
+
+a:hover { text-decoration-color: var(--lp-accent); }
+
+/* ─── Blockquote ──────────────────────────────────── */
+blockquote {
+  margin: 1.5rem 0;
+  padding: 0 0 0 1.5rem;
+  border-left: 3px solid var(--lp-line);
+  font-style: italic;
+  color: var(--lp-ink-dim);
+}
+
+blockquote p:last-child { margin-bottom: 0; }
+
+/* ─── Code ────────────────────────────────────────── */
+code {
+  font-family: var(--lp-font-mono);
+  font-size: 0.82em;
+  background: var(--lp-code-bg);
+  padding: 2px 5px;
+  border-radius: 3px;
+}
+
+pre {
+  position: relative;
+  background: var(--lp-code-bg);
+  border: 1px solid var(--lp-line);
+  border-radius: 4px;
+  padding: 1rem 1.25rem;
+  overflow-x: auto;
+  font-size: 0.8rem;
+  line-height: 1.6;
+  margin: 1.5rem 0;
+}
+
+pre code {
+  background: none;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+}
+
+/* Copy button on code blocks */
+.code-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  font-family: var(--lp-font-mono);
+  font-size: 0.7rem;
+  background: var(--lp-btn-bg);
+  border: 1px solid var(--lp-line);
+  border-radius: 3px;
+  color: var(--lp-ink-mute);
+  cursor: pointer;
+  padding: 2px 7px;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s, background 0.15s;
+  line-height: 1.4;
+}
+
+pre:hover .code-copy { opacity: 1; }
+.code-copy:hover {
+  background: var(--lp-btn-hover);
+  color: var(--lp-ink-dim);
+}
+.code-copy.flashed { color: var(--lp-accent); opacity: 1; }
+
+/* ─── Table ───────────────────────────────────────── */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1.5rem 0;
+  font-size: 0.88rem;
+}
+
+thead th {
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 2px solid var(--lp-ink);
+  font-weight: 600;
+}
+
+tbody td {
+  padding: 0.4rem 0.75rem;
+  border-bottom: 1px solid var(--lp-line);
+}
+
+/* ─── Horizontal Rule ─────────────────────────────── */
+hr {
+  border: none;
+  border-top: 1px solid var(--lp-line);
+  margin: 2.5rem 0;
+}
+
+/* ─── Lists ───────────────────────────────────────── */
+ul, ol {
+  padding-left: 1.5rem;
+  margin: 0 0 1.2rem;
+}
+
+li { margin-bottom: 0.3rem; }
+li > ul, li > ol { margin-top: 0.3rem; margin-bottom: 0; }
+
+/* ─── Images ──────────────────────────────────────── */
+img {
+  max-width: 100%;
+  border-radius: 2px;
+  margin: 0.5rem 0;
+}
+
+/* ─── Welcome State ───────────────────────────────── */
+.welcome {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  color: var(--lp-ink-mute);
+  gap: 0.75rem;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.welcome-title {
+  font-family: var(--lp-font-display);
+  font-size: 2rem;
+  font-weight: 400;
+  font-variation-settings: "opsz" 96;
+  color: var(--lp-ink-dim);
+  margin: 0;
+}
+
+.welcome-hint {
+  font-family: var(--lp-font-mono);
+  font-size: 0.75rem;
+  margin: 0;
+}
+
+kbd {
+  display: inline-block;
+  padding: 2px 6px;
+  font-family: var(--lp-font-mono);
+  font-size: 0.8em;
+  background: var(--lp-btn-bg);
+  border: 1px solid var(--lp-line);
+  border-radius: 3px;
+}
+
+/* ─── Drag Over ───────────────────────────────────── */
+body.drag-over::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.03);
+  border: 2px dashed var(--lp-ink-mute);
+  border-radius: 8px;
+  margin: 12px;
+  pointer-events: none;
+  z-index: 100;
+}
