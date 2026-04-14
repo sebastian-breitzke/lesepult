@@ -68,12 +68,14 @@ echo "==> Signing as: $IDENTITY"
 SIGN_OPTS=(--force --sign "$IDENTITY" --timestamp --options runtime --entitlements "$ENT")
 
 # Sign inside-out: frameworks/dylibs first, then main binary, then bundle
-find "$APP/Contents/Frameworks" -type f \( -name "*.dylib" -o -perm +111 \) 2>/dev/null | while read -r lib; do
-    codesign "${SIGN_OPTS[@]}" "$lib"
-done
-find "$APP/Contents/Frameworks" -name "*.framework" -type d 2>/dev/null | while read -r fw; do
-    codesign "${SIGN_OPTS[@]}" "$fw"
-done
+if [[ -d "$APP/Contents/Frameworks" ]]; then
+    find "$APP/Contents/Frameworks" -type f \( -name "*.dylib" -o -perm +111 \) | while read -r lib; do
+        codesign "${SIGN_OPTS[@]}" "$lib"
+    done || true
+    find "$APP/Contents/Frameworks" -name "*.framework" -type d | while read -r fw; do
+        codesign "${SIGN_OPTS[@]}" "$fw"
+    done || true
+fi
 codesign "${SIGN_OPTS[@]}" "$APP/Contents/MacOS/$APP_NAME"
 codesign "${SIGN_OPTS[@]}" "$APP"
 codesign --verify --verbose=2 --strict "$APP"
