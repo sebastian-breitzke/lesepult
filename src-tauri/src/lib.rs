@@ -154,10 +154,11 @@ async fn share_file(app: tauri::AppHandle, path: String) -> Result<(), String> {
 
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (app, path);
-        return Err("Share not supported on this platform".into());
+        let _ = app;
+        return Err(format!("Share not supported on this platform ({})", path));
     }
 
+    #[cfg(target_os = "macos")]
     Ok(())
 }
 
@@ -177,6 +178,7 @@ pub fn run() {
         .expect("error while building Lesepult");
 
     app.run(|handle, event| {
+        #[cfg(target_os = "macos")]
         if let RunEvent::Opened { urls } = event {
             for url in &urls {
                 if let Ok(path) = url.to_file_path() {
@@ -191,5 +193,7 @@ pub fn run() {
                 }
             }
         }
+        #[cfg(not(target_os = "macos"))]
+        { let _ = (handle, event); }
     });
 }
