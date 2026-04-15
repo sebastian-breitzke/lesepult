@@ -4,14 +4,16 @@ Minimal desktop app that opens Markdown files and renders them with Tufte-style 
 
 ## Features
 
-- Open `.md` files via Cmd+O, drag & drop, or file association
+- Open `.md` files via Cmd+O / Ctrl+O, drag & drop, or file association
 - Tufte-inspired layout: Palatino body, Fraunces headings, IBM Plex Mono for code
 - Copy buttons on code blocks
 - Copy whole file to clipboard
-- macOS native share sheet
+- macOS native share sheet (Windows: copies to clipboard)
 - Light and dark mode (follows system)
 
 ## Install
+
+### macOS (Homebrew)
 
 ```
 brew tap sebastian-breitzke/tap
@@ -19,6 +21,10 @@ brew install --cask lesepult
 ```
 
 Or download the DMG from [Releases](https://github.com/sebastian-breitzke/lesepult/releases).
+
+### Windows
+
+Download the `.exe` installer or `.msi` from [Releases](https://github.com/sebastian-breitzke/lesepult/releases).
 
 ## Build from source
 

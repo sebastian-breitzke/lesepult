@@ -91,6 +91,60 @@ jobs:
             gh release upload "$TAG" "$DMG" --clobber
           fi
 
+  build-windows:
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.vars.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: vars
+        shell: bash
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ "$REF_NAME" == v* ]]; then
+            VERSION="${REF_NAME#v}"
+          else
+            VERSION="$INPUT_VERSION"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        run: bun install
+
+      - name: Build Tauri app
+        run: bun run tauri build --bundles nsis,msi
+
+      - name: Upload to GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUILD_VERSION: ${{ steps.vars.outputs.version }}
+        run: |
+          TAG="v${BUILD_VERSION}"
+          NSIS="src-tauri/target/release/bundle/nsis/Lesepult_${BUILD_VERSION}_x64-setup.exe"
+          MSI="src-tauri/target/release/bundle/msi/Lesepult_${BUILD_VERSION}_x64_en-US.msi"
+          FILES=""
+          [ -f "$NSIS" ] && FILES="$FILES $NSIS"
+          [ -f "$MSI" ] && FILES="$FILES $MSI"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" $FILES \
+              --title "Lesepult ${BUILD_VERSION}" \
+              --generate-notes
+          else
+            for f in $FILES; do
+              gh release upload "$TAG" "$f" --clobber
+            done
+          fi
+
   update-cask:
     needs: build
     runs-on: ubuntu-latest
