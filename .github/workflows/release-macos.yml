@@ -41,6 +41,11 @@ jobs:
         with:
           targets: aarch64-apple-darwin
 
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
       - name: Import signing certificate
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
