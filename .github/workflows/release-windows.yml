@@ -1,0 +1,79 @@
+name: Release Windows
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version (without v-prefix)
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: vars
+        shell: bash
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ "$REF_NAME" == v* ]]; then
+            VERSION="${REF_NAME#v}"
+          else
+            VERSION="$INPUT_VERSION"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        run: bun install
+
+      - name: Patch version in tauri.conf.json
+        shell: bash
+        env:
+          BUILD_VERSION: ${{ steps.vars.outputs.version }}
+        run: |
+          cd src-tauri
+          jq --arg v "$BUILD_VERSION" '.version = $v' tauri.conf.json > tmp.json && mv tmp.json tauri.conf.json
+
+      - name: Build Tauri app
+        run: bun run tauri build --bundles nsis,msi
+
+      - name: Upload to GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUILD_VERSION: ${{ steps.vars.outputs.version }}
+        run: |
+          TAG="v${BUILD_VERSION}"
+          NSIS=$(find src-tauri/target/release/bundle/nsis -name "*-setup.exe" 2>/dev/null | head -1)
+          MSI=$(find src-tauri/target/release/bundle/msi -name "*.msi" 2>/dev/null | head -1)
+          FILES=""
+          [ -n "$NSIS" ] && FILES="$FILES $NSIS"
+          [ -n "$MSI" ] && FILES="$FILES $MSI"
+          if [ -z "$FILES" ]; then
+            echo "No bundle files found"
+            exit 1
+          fi
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" $FILES \
+              --title "Lesepult ${BUILD_VERSION}" \
+              --generate-notes
+          else
+            for f in $FILES; do
+              gh release upload "$TAG" "$f" --clobber
+            done
+          fi
