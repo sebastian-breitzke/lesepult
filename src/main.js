@@ -51,9 +51,14 @@ function render(name, content, path) {
   article.append(meta, body);
   app.replaceChildren(article);
   addCodeCopyButtons(body);
+  wireLinks(body, path);
 
   document.title = `${name} \u2014 Lesepult`;
   window.scrollTo(0, 0);
+
+  // Register this window as displaying `path` so other open_md_window calls
+  // can focus it instead of opening a duplicate.
+  invoke("set_window_file", { path }).catch(() => {});
 }
 
 function showWelcome() {
@@ -75,6 +80,48 @@ function showWelcome() {
   wrap.append(title, hint);
   app.append(wrap);
   document.title = "Lesepult";
+  invoke("set_window_file", { path: null }).catch(() => {});
+}
+
+// ─── Link handling ───────────────────────────────────────
+// External URLs -> OS default browser. In-page anchors keep default.
+
+function wireLinks(container, basePath) {
+  container.addEventListener("click", async (e) => {
+    const a = e.target.closest("a");
+    if (!a || !container.contains(a)) return;
+
+    const href = a.getAttribute("href");
+    if (!href || href.startsWith("#")) return;
+
+    const hasScheme = /^([a-z][a-z0-9+.\-]*):/i.test(href);
+    if (hasScheme) {
+      e.preventDefault();
+      try {
+        await invoke("open_external", { url: href });
+      } catch (err) {
+        console.error("open_external failed:", err);
+      }
+      return;
+    }
+
+    // Local path: .md -> new Lesepult window, anything else -> OS opener.
+    e.preventDefault();
+    const [filePath] = href.split("#");
+    if (/\.(md|markdown)$/i.test(filePath)) {
+      try {
+        await invoke("open_md_window", { path: filePath, base: basePath ?? null });
+      } catch (err) {
+        console.error("open_md_window failed:", err);
+      }
+    } else {
+      try {
+        await invoke("open_external", { url: href });
+      } catch (err) {
+        console.error("open_external failed:", err);
+      }
+    }
+  });
 }
 
 // ─── Copy buttons on code blocks ─────────────────────────
@@ -159,9 +206,28 @@ async function openPath(path) {
 
 // ─── Init ────────────────────────────────────────────────
 
+function getFileFromHash() {
+  const hash = window.location.hash;
+  if (!hash.startsWith("#file=")) return null;
+  try {
+    return decodeURIComponent(hash.slice("#file=".length));
+  } catch (_) {
+    return null;
+  }
+}
+
 (async () => {
   // Register open-file listener BEFORE checking initial file
   await listen("open-file", (event) => openPath(event.payload));
+
+  // New-window path: file passed via URL hash (#file=<encoded path>)
+  const hashed = getFileFromHash();
+  if (hashed) {
+    try {
+      const r = await invoke("read_file_at_path", { path: hashed });
+      return render(r.name, r.content, r.path);
+    } catch (_) {}
+  }
 
   try {
     const r = await invoke("get_initial_file");
