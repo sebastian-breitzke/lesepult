@@ -27,9 +27,14 @@ function render(name, content, path) {
   const actions = document.createElement("span");
   actions.className = "meta-actions";
 
-  const copyBtn = makeButton("Copy", "\u2398", () => {
+  const copyBtn = makeButton("Copy as Markdown", "\u2398", () => {
     navigator.clipboard.writeText(content);
     flash(copyBtn, "Copied");
+  });
+
+  const richBtn = makeButton("Copy as rich text", "\u00B6", async () => {
+    const ok = await copyRichText(body.innerHTML, body.textContent || content);
+    flash(richBtn, ok ? "Copied" : "Failed");
   });
 
   const shareBtn = makeButton("Share", "\u21AA", async () => {
@@ -41,7 +46,7 @@ function render(name, content, path) {
     }
   });
 
-  actions.append(copyBtn, shareBtn);
+  actions.append(copyBtn, richBtn, shareBtn);
   meta.append(filename, actions);
 
   const body = document.createElement("div");
@@ -81,6 +86,29 @@ function showWelcome() {
   app.append(wrap);
   document.title = "Lesepult";
   invoke("set_window_file", { path: null }).catch(() => {});
+}
+
+// ─── Rich text clipboard ─────────────────────────────────
+// Writes both text/html and text/plain so Teams, Word, Mail, etc. paste
+// with formatting, while plain-text targets still get readable content.
+
+async function copyRichText(html, plain) {
+  try {
+    const item = new ClipboardItem({
+      "text/html": new Blob([html], { type: "text/html" }),
+      "text/plain": new Blob([plain], { type: "text/plain" }),
+    });
+    await navigator.clipboard.write([item]);
+    return true;
+  } catch (err) {
+    console.error("rich copy failed:", err);
+    try {
+      await navigator.clipboard.writeText(plain);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
 }
 
 // ─── Link handling ───────────────────────────────────────
