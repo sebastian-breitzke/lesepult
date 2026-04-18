@@ -1,13 +1,16 @@
 # Lesepult
 
-Minimal desktop app that opens Markdown files and renders them with Tufte-style typography. No editing, no state — just reading.
+Minimal desktop app that opens Markdown files and renders them with clean typography. Read, review, make quick edits — nothing more.
 
 ## Features
 
 - Open `.md` files via Cmd+O / Ctrl+O, drag & drop, or file association
 - Tufte-inspired layout: Palatino body, Fraunces headings, IBM Plex Mono for code
+- YAML frontmatter parsed and displayed as structured metadata block
+- Clipboard detection on launch: open markdown files or render markdown text from clipboard
+- Inline editing: double-click any block to edit its raw markdown, saved directly to file
+- Copy as Markdown or rich text (for Teams, Word, Mail)
 - Copy buttons on code blocks
-- Copy whole file to clipboard
 - macOS native share sheet (Windows: copies to clipboard)
 - Light and dark mode (follows system)
 

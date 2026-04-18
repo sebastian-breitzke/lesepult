@@ -151,6 +151,118 @@ body {
   color: var(--lp-ink-dim);
 }
 
+/* ─── Inline editor ──────────────────────────────── */
+.content [data-block-index]:hover {
+  outline: 1px dashed var(--lp-line);
+  outline-offset: 4px;
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.edit-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.edit-dialog {
+  background: var(--lp-bg);
+  border: 1px solid var(--lp-line);
+  border-radius: 8px;
+  width: 80vw;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
+}
+
+.edit-header {
+  font-family: var(--lp-font-mono);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--lp-ink-dim);
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--lp-line);
+}
+
+.edit-textarea {
+  font-family: var(--lp-font-mono);
+  font-size: 0.85rem;
+  line-height: 1.6;
+  color: var(--lp-ink);
+  background: var(--lp-bg);
+  border: none;
+  outline: none;
+  padding: 1rem;
+  resize: none;
+  tab-size: 4;
+  min-height: 80px;
+  overflow: hidden;
+}
+
+.edit-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.6rem 1rem;
+  border-top: 1px solid var(--lp-line);
+  gap: 12px;
+}
+
+.edit-info {
+  font-family: var(--lp-font-mono);
+  font-size: 0.65rem;
+  color: var(--lp-ink-mute);
+  flex: 1;
+  min-width: 0;
+}
+
+.edit-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.edit-btn {
+  font-family: var(--lp-font-mono);
+  font-size: 0.78rem;
+  border-radius: 4px;
+  padding: 5px 14px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  line-height: 1;
+}
+
+.edit-btn-secondary {
+  background: var(--lp-btn-bg);
+  border: 1px solid var(--lp-line);
+  color: var(--lp-ink-dim);
+}
+
+.edit-btn-secondary:hover {
+  background: var(--lp-btn-hover);
+  color: var(--lp-ink);
+}
+
+.edit-btn-primary {
+  background: var(--lp-accent);
+  border: 1px solid var(--lp-accent);
+  color: #fff;
+}
+
+.edit-btn-primary:hover {
+  filter: brightness(1.1);
+}
+
+.edit-btn.flashed {
+  color: var(--lp-accent);
+}
+
 /* ─── Typography ──────────────────────────────────── */
 h1, h2, h3, h4, h5, h6 {
   font-family: var(--lp-font-display);

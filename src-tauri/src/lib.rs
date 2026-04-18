@@ -164,6 +164,11 @@ fn read_clipboard_text() -> Option<String> {
 }
 
 #[tauri::command]
+fn write_file(path: String, content: String) -> Result<(), String> {
+    std::fs::write(&path, &content).map_err(|e| format!("Cannot write {path}: {e}"))
+}
+
+#[tauri::command]
 fn open_external(url: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -330,6 +335,7 @@ pub fn run() {
             set_window_file,
             share_file,
             read_clipboard_text,
+            write_file,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Lesepult");

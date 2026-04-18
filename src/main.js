@@ -1,17 +1,87 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { marked } from "marked";
+import { marked, Lexer } from "marked";
 import DOMPurify from "dompurify";
 import "./style.css";
 
 const app = document.getElementById("app");
 let currentFile = null; // { name, content, path }
 
+// ─── Block index tracking ────────────────────────────────
+
+let blockQueue = [];
+let blockCounter = 0;
+
+function injectAttr(html) {
+  if (blockCounter >= blockQueue.length) return html;
+  const idx = blockQueue[blockCounter++];
+  return html.replace(/^<(\w+)/, `<$1 data-block-index="${idx}"`);
+}
+
+marked.use({
+  renderer: {
+    paragraph(token) {
+      const body = this.parser.parseInline(token.tokens);
+      return injectAttr(`<p>${body}</p>\n`);
+    },
+    heading(token) {
+      const body = this.parser.parseInline(token.tokens);
+      return injectAttr(`<h${token.depth}>${body}</h${token.depth}>\n`);
+    },
+    code(token) {
+      const code = token.text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      const lang = token.lang ? ` class="language-${token.lang}"` : "";
+      return injectAttr(`<pre><code${lang}>${code}\n</code></pre>\n`);
+    },
+    blockquote(token) {
+      const body = this.parser.parse(token.tokens);
+      return injectAttr(`<blockquote>${body}</blockquote>\n`);
+    },
+    list(token) {
+      const tag = token.ordered ? "ol" : "ul";
+      const start = token.ordered && token.start !== 1 ? ` start="${token.start}"` : "";
+      let body = "";
+      for (const item of token.items) {
+        let itemBody = this.parser.parse(item.tokens, !!item.loose);
+        if (item.task) {
+          const cb = `<input type="checkbox"${item.checked ? " checked" : ""} disabled> `;
+          itemBody = itemBody.replace(/^<p>/, `<p>${cb}`);
+        }
+        body += `<li>${itemBody}</li>\n`;
+      }
+      return injectAttr(`<${tag}${start}>${body}</${tag}>\n`);
+    },
+    table(token) {
+      let header = "<tr>";
+      for (let j = 0; j < token.header.length; j++) {
+        const cell = token.header[j];
+        const align = cell.align ? ` style="text-align:${cell.align}"` : "";
+        header += `<th${align}>${this.parser.parseInline(cell.tokens)}</th>`;
+      }
+      header += "</tr>\n";
+      let body = "";
+      for (const row of token.rows) {
+        body += "<tr>";
+        for (let j = 0; j < row.length; j++) {
+          const cell = row[j];
+          const align = cell.align ? ` style="text-align:${cell.align}"` : "";
+          body += `<td${align}>${this.parser.parseInline(cell.tokens)}</td>`;
+        }
+        body += "</tr>\n";
+      }
+      return injectAttr(`<table><thead>${header}</thead><tbody>${body}</tbody></table>\n`);
+    },
+    hr() {
+      return injectAttr(`<hr>\n`);
+    },
+  },
+});
+
 // ─── Frontmatter ─────────────────────────────────────────
 
 function parseFrontmatter(content) {
   const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
-  if (!match) return { meta: null, body: content };
+  if (!match) return { meta: null, body: content, offset: 0 };
   const meta = {};
   for (const line of match[1].split(/\r?\n/)) {
     const idx = line.indexOf(":");
@@ -20,14 +90,26 @@ function parseFrontmatter(content) {
     const val = line.slice(idx + 1).trim();
     if (key) meta[key] = val;
   }
-  return { meta: Object.keys(meta).length ? meta : null, body: content.slice(match[0].length) };
+  const offset = match[0].length;
+  return { meta: Object.keys(meta).length ? meta : null, body: content.slice(offset), offset };
 }
 
 // ─── Render ──────────────────────────────────────────────
 
 function render(name, content, path) {
   currentFile = { name, content, path };
-  const { meta: fmMeta, body: bodyContent } = parseFrontmatter(content);
+  const { meta: fmMeta, body: bodyContent, offset: fmOffset } = parseFrontmatter(content);
+  const tokens = Lexer.lex(bodyContent);
+  currentFile.tokens = tokens;
+  currentFile.fmOffset = fmOffset;
+
+  // Build queue of token indices that produce rendered output
+  blockQueue = [];
+  blockCounter = 0;
+  for (let i = 0; i < tokens.length; i++) {
+    if (tokens[i].type !== "space") blockQueue.push(i);
+  }
+
   const safeHtml = DOMPurify.sanitize(marked.parse(bodyContent));
 
   const article = document.createElement("article");
@@ -98,6 +180,14 @@ function render(name, content, path) {
   app.replaceChildren(article);
   addCodeCopyButtons(body);
   wireLinks(body, path);
+
+  // Inline editing via double-click
+  body.addEventListener("dblclick", (e) => {
+    const block = e.target.closest("[data-block-index]");
+    if (!block) return;
+    e.preventDefault();
+    openBlockEditor(parseInt(block.dataset.blockIndex, 10));
+  });
 
   document.title = `${name} \u2014 Lesepult`;
   window.scrollTo(0, 0);
@@ -201,6 +291,126 @@ async function showWelcome() {
   app.append(wrap);
   document.title = "Lesepult";
   invoke("set_window_file", { path: null }).catch(() => {});
+}
+
+// ─── Inline block editor ─────────────────────────────────
+
+const BLOCK_LABELS = {
+  heading: "Überschrift bearbeiten",
+  paragraph: "Absatz bearbeiten",
+  blockquote: "Zitat bearbeiten",
+  code: "Codeblock bearbeiten",
+  list: "Liste bearbeiten",
+  table: "Tabelle bearbeiten",
+  hr: "Trennlinie bearbeiten",
+  html: "HTML bearbeiten",
+};
+
+function openBlockEditor(tokenIndex) {
+  if (!currentFile || currentFile.path == null) return;
+  const token = currentFile.tokens[tokenIndex];
+  if (!token) return;
+
+  const label = BLOCK_LABELS[token.type] || "Block bearbeiten";
+  // Token raw usually ends with \n — trim trailing newlines for editing
+  const rawText = token.raw.replace(/\n+$/, "");
+
+  // Overlay
+  const overlay = document.createElement("div");
+  overlay.className = "edit-overlay";
+
+  // Dialog
+  const dialog = document.createElement("div");
+  dialog.className = "edit-dialog";
+
+  // Header
+  const header = document.createElement("div");
+  header.className = "edit-header";
+  header.textContent = label;
+
+  // Textarea
+  const textarea = document.createElement("textarea");
+  textarea.className = "edit-textarea";
+  textarea.value = rawText;
+  textarea.spellcheck = false;
+  // Auto-size to fit content
+  requestAnimationFrame(() => {
+    textarea.style.height = "auto";
+    textarea.style.height = textarea.scrollHeight + "px";
+  });
+
+  // Footer
+  const footer = document.createElement("div");
+  footer.className = "edit-footer";
+
+  const info = document.createElement("span");
+  info.className = "edit-info";
+  info.textContent = "Änderungen werden direkt in der Datei gespeichert";
+
+  const actions = document.createElement("span");
+  actions.className = "edit-actions";
+
+  const discardBtn = document.createElement("button");
+  discardBtn.className = "edit-btn edit-btn-secondary";
+  discardBtn.textContent = "Verwerfen";
+
+  const saveBtn = document.createElement("button");
+  saveBtn.className = "edit-btn edit-btn-primary";
+  saveBtn.textContent = "Speichern";
+
+  actions.append(discardBtn, saveBtn);
+  footer.append(info, actions);
+  dialog.append(header, textarea, footer);
+  overlay.append(dialog);
+
+  // Close handler
+  function close() {
+    overlay.remove();
+    document.removeEventListener("keydown", onKey);
+  }
+
+  // Save handler
+  async function save() {
+    const edited = textarea.value;
+    // Preserve trailing newline convention from original raw
+    const trailingMatch = token.raw.match(/(\n+)$/);
+    const trailing = trailingMatch ? trailingMatch[1] : "\n";
+    const editedRaw = edited + trailing;
+
+    // Compute position of this token in the full content
+    let offset = currentFile.fmOffset;
+    for (let i = 0; i < tokenIndex; i++) {
+      offset += currentFile.tokens[i].raw.length;
+    }
+    const end = offset + token.raw.length;
+    const newContent =
+      currentFile.content.slice(0, offset) +
+      editedRaw +
+      currentFile.content.slice(end);
+
+    try {
+      await invoke("write_file", { path: currentFile.path, content: newContent });
+      close();
+      render(currentFile.name, newContent, currentFile.path);
+    } catch (err) {
+      console.error("save failed:", err);
+      flash(saveBtn, "Fehler");
+    }
+  }
+
+  function onKey(e) {
+    if (e.key === "Escape") { e.preventDefault(); close(); }
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); save(); }
+  }
+
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  discardBtn.addEventListener("click", close);
+  saveBtn.addEventListener("click", save);
+  document.addEventListener("keydown", onKey);
+
+  document.body.append(overlay);
+  textarea.focus();
+  textarea.setSelectionRange(0, 0);
 }
 
 // ─── Rich text clipboard ─────────────────────────────────
