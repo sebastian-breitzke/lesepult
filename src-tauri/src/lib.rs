@@ -159,6 +159,11 @@ fn read_file_at_path(path: String) -> Result<FileResult, String> {
 }
 
 #[tauri::command]
+fn read_clipboard_text() -> Option<String> {
+    arboard::Clipboard::new().ok()?.get_text().ok()
+}
+
+#[tauri::command]
 fn open_external(url: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -324,6 +329,7 @@ pub fn run() {
             open_md_window,
             set_window_file,
             share_file,
+            read_clipboard_text,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Lesepult");

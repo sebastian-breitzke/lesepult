@@ -103,6 +103,54 @@ body {
   color: var(--lp-accent);
 }
 
+/* ─── Frontmatter ────────────────────────────────── */
+.frontmatter {
+  margin: 0 0 2.5rem;
+  padding: 0.75rem 1rem;
+  background: var(--lp-code-bg);
+  border: 1px solid var(--lp-line);
+  border-radius: 4px;
+  font-family: var(--lp-font-mono);
+  font-size: 0.72rem;
+  line-height: 1.6;
+  color: var(--lp-ink-dim);
+}
+
+.frontmatter-label {
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--lp-ink-mute);
+  margin-bottom: 0.6rem;
+}
+
+.frontmatter-table {
+  width: auto;
+  border-collapse: collapse;
+  margin: 0;
+  font-size: inherit;
+}
+
+.frontmatter-table td.fm-key,
+.frontmatter-table td.fm-val {
+  padding: 0.2rem 0;
+  border: none;
+  vertical-align: top;
+}
+
+.frontmatter-table td.fm-key {
+  color: var(--lp-ink-dim);
+  font-weight: 500;
+  text-align: right;
+  padding-right: 2rem;
+  white-space: nowrap;
+}
+
+.frontmatter-table td.fm-val {
+  color: var(--lp-ink-dim);
+}
+
 /* ─── Typography ──────────────────────────────────── */
 h1, h2, h3, h4, h5, h6 {
   font-family: var(--lp-font-display);
@@ -290,6 +338,36 @@ img {
   font-family: var(--lp-font-mono);
   font-size: 0.75rem;
   margin: 0;
+}
+
+.welcome-clip-msg {
+  font-family: var(--lp-font-mono);
+  font-size: 0.8rem;
+  color: var(--lp-ink-dim);
+  margin: 0 0 0.75rem;
+}
+
+.welcome-cta {
+  font-family: var(--lp-font-mono);
+  font-size: 0.8rem;
+  background: var(--lp-btn-bg);
+  border: 1px solid var(--lp-line);
+  border-radius: 4px;
+  color: var(--lp-ink-dim);
+  cursor: pointer;
+  padding: 6px 18px;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  margin-bottom: 1.5rem;
+}
+
+.welcome-cta:hover {
+  background: var(--lp-btn-hover);
+  color: var(--lp-ink);
+  border-color: var(--lp-ink-mute);
+}
+
+.welcome-cta.flashed {
+  color: var(--lp-accent);
 }
 
 kbd {

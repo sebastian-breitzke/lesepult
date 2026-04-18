@@ -7,18 +7,35 @@ import "./style.css";
 const app = document.getElementById("app");
 let currentFile = null; // { name, content, path }
 
+// ─── Frontmatter ─────────────────────────────────────────
+
+function parseFrontmatter(content) {
+  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+  if (!match) return { meta: null, body: content };
+  const meta = {};
+  for (const line of match[1].split(/\r?\n/)) {
+    const idx = line.indexOf(":");
+    if (idx === -1) continue;
+    const key = line.slice(0, idx).trim();
+    const val = line.slice(idx + 1).trim();
+    if (key) meta[key] = val;
+  }
+  return { meta: Object.keys(meta).length ? meta : null, body: content.slice(match[0].length) };
+}
+
 // ─── Render ──────────────────────────────────────────────
 
 function render(name, content, path) {
   currentFile = { name, content, path };
-  const safeHtml = DOMPurify.sanitize(marked.parse(content));
+  const { meta: fmMeta, body: bodyContent } = parseFrontmatter(content);
+  const safeHtml = DOMPurify.sanitize(marked.parse(bodyContent));
 
   const article = document.createElement("article");
   article.className = "article";
 
   // Meta bar with filename + action buttons
-  const meta = document.createElement("div");
-  meta.className = "article-meta";
+  const metaBar = document.createElement("div");
+  metaBar.className = "article-meta";
 
   const filename = document.createElement("span");
   filename.className = "meta-filename";
@@ -47,13 +64,37 @@ function render(name, content, path) {
   });
 
   actions.append(copyBtn, richBtn, shareBtn);
-  meta.append(filename, actions);
+  metaBar.append(filename, actions);
+
+  // Frontmatter metadata block
+  let fmBlock = null;
+  if (fmMeta) {
+    fmBlock = document.createElement("div");
+    fmBlock.className = "frontmatter";
+    const label = document.createElement("div");
+    label.className = "frontmatter-label";
+    label.textContent = "Metadaten";
+    const table = document.createElement("table");
+    table.className = "frontmatter-table";
+    for (const [key, val] of Object.entries(fmMeta)) {
+      const tr = document.createElement("tr");
+      const td1 = document.createElement("td");
+      td1.className = "fm-key";
+      td1.textContent = key;
+      const td2 = document.createElement("td");
+      td2.className = "fm-val";
+      td2.textContent = val;
+      tr.append(td1, td2);
+      table.append(tr);
+    }
+    fmBlock.append(label, table);
+  }
 
   const body = document.createElement("div");
   body.className = "content";
   body.innerHTML = safeHtml;
 
-  article.append(meta, body);
+  article.append(metaBar, ...(fmBlock ? [fmBlock] : []), body);
   app.replaceChildren(article);
   addCodeCopyButtons(body);
   wireLinks(body, path);
@@ -66,7 +107,31 @@ function render(name, content, path) {
   invoke("set_window_file", { path }).catch(() => {});
 }
 
-function showWelcome() {
+// ─── Clipboard detection ─────────────────────────────────
+
+function looksLikeMarkdown(text) {
+  return /^#{1,6}\s/m.test(text) ||
+    /\*\*[^*]+\*\*/m.test(text) ||
+    /^```/m.test(text) ||
+    /^\s*[-*+]\s/m.test(text) ||
+    /^\s*\d+\.\s/m.test(text) ||
+    /\[.+\]\(.+\)/m.test(text) ||
+    /^---\r?\n/.test(text);
+}
+
+function detectClipboard(text) {
+  const trimmed = (text || "").trim();
+  if (!trimmed) return null;
+  if (trimmed.split("\n").length === 1 && /\.(md|markdown)$/i.test(trimmed)) {
+    return { type: "path", value: trimmed };
+  }
+  if (looksLikeMarkdown(trimmed)) {
+    return { type: "text", value: trimmed };
+  }
+  return null;
+}
+
+async function showWelcome() {
   currentFile = null;
   app.replaceChildren();
   const wrap = document.createElement("div");
@@ -76,13 +141,63 @@ function showWelcome() {
   title.className = "welcome-title";
   title.textContent = "Lesepult";
 
-  const hint = document.createElement("p");
-  hint.className = "welcome-hint";
-  const kbd = document.createElement("kbd");
-  kbd.textContent = "\u2318O";
-  hint.append(kbd, " oder Markdown hierher ziehen");
+  // Check clipboard for markdown content
+  let clip = null;
+  try { clip = detectClipboard(await invoke("read_clipboard_text")); } catch (_) {}
 
-  wrap.append(title, hint);
+  if (clip?.type === "path") {
+    const msg = document.createElement("p");
+    msg.className = "welcome-clip-msg";
+    msg.textContent = "Markdown-Datei in der Zwischenablage";
+
+    const cta = document.createElement("button");
+    cta.className = "welcome-cta";
+    cta.textContent = "Anzeigen";
+    cta.addEventListener("click", async () => {
+      try {
+        const r = await invoke("read_file_at_path", { path: clip.value });
+        render(r.name, r.content, r.path);
+      } catch (_) {
+        flash(cta, "Nicht gefunden");
+      }
+    });
+
+    const hint = document.createElement("p");
+    hint.className = "welcome-hint";
+    const kbd = document.createElement("kbd");
+    kbd.textContent = "\u2318O";
+    hint.append(kbd, " oder Markdown hierher ziehen");
+
+    wrap.append(title, msg, cta, hint);
+  } else if (clip?.type === "text") {
+    const msg = document.createElement("p");
+    msg.className = "welcome-clip-msg";
+    msg.textContent = "Markdown-Text in der Zwischenablage";
+
+    const cta = document.createElement("button");
+    cta.className = "welcome-cta";
+    cta.textContent = "Anzeigen";
+    cta.addEventListener("click", () => {
+      render("Zwischenablage", clip.value, null);
+    });
+
+    const hint = document.createElement("p");
+    hint.className = "welcome-hint";
+    const kbd = document.createElement("kbd");
+    kbd.textContent = "\u2318O";
+    hint.append(kbd, " oder Markdown hierher ziehen");
+
+    wrap.append(title, msg, cta, hint);
+  } else {
+    const hint = document.createElement("p");
+    hint.className = "welcome-hint";
+    const kbd = document.createElement("kbd");
+    kbd.textContent = "\u2318O";
+    hint.append(kbd, " oder Markdown hierher ziehen");
+
+    wrap.append(title, hint);
+  }
+
   app.append(wrap);
   document.title = "Lesepult";
   invoke("set_window_file", { path: null }).catch(() => {});
