@@ -8,29 +8,38 @@ struct FileResult {
     name: String,
     content: String,
     path: String,
+    modified: u64,
+    size: u64,
 }
 
 fn read_md(path: &Path) -> Option<FileResult> {
     let content = std::fs::read_to_string(path).ok()?;
+    let meta = std::fs::metadata(path).ok();
+    let modified = meta
+        .as_ref()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let size = meta.map(|m| m.len()).unwrap_or(content.len() as u64);
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
     let path_str = path.to_string_lossy().to_string();
-    Some(FileResult {
-        name,
-        content,
-        path: path_str,
-    })
+    Some(FileResult { name, content, path: path_str, modified, size })
 }
 
 #[tauri::command]
-async fn open_file_dialog() -> Option<FileResult> {
-    let file = rfd::AsyncFileDialog::new()
+async fn open_file_dialog() -> Vec<FileResult> {
+    rfd::AsyncFileDialog::new()
         .add_filter("Markdown", &["md", "markdown", "txt"])
-        .pick_file()
-        .await?;
-    read_md(file.path())
+        .pick_files()
+        .await
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|f| read_md(f.path()))
+        .collect()
 }
 
 fn resolve_path(raw: &str, base: Option<&str>) -> PathBuf {
@@ -194,25 +203,27 @@ fn open_external(url: String) -> Result<(), String> {
     Ok(())
 }
 
-struct PendingFile(Mutex<Option<String>>);
+struct PendingFiles(Mutex<Vec<String>>);
 
 #[tauri::command]
-fn get_initial_file(state: tauri::State<PendingFile>) -> Option<FileResult> {
-    // Check path stored by RunEvent::Opened (macOS file association)
-    if let Some(path) = state.0.lock().unwrap().take() {
-        let p = PathBuf::from(&path);
-        if p.exists() {
-            return read_md(&p);
-        }
+fn get_initial_file(state: tauri::State<PendingFiles>) -> Vec<FileResult> {
+    // Drain paths stored by RunEvent::Opened (macOS file association)
+    let pending: Vec<String> = std::mem::take(&mut *state.0.lock().unwrap());
+    if !pending.is_empty() {
+        return pending
+            .iter()
+            .filter_map(|p| read_md(&PathBuf::from(p)))
+            .collect();
     }
-    // Fallback: CLI args
+    // Fallback: all .md/.markdown CLI args
     std::env::args()
         .skip(1)
-        .find(|a| a.ends_with(".md") || a.ends_with(".markdown"))
-        .and_then(|a| {
+        .filter(|a| a.ends_with(".md") || a.ends_with(".markdown"))
+        .filter_map(|a| {
             let p = PathBuf::from(&a);
             if p.exists() { read_md(&p) } else { None }
         })
+        .collect()
 }
 
 // ─── macOS Share Sheet ───────────────────────────────────────
@@ -324,7 +335,7 @@ pub fn run() {
     use tauri::{Manager, RunEvent};
 
     let app = tauri::Builder::default()
-        .manage(PendingFile(Mutex::new(None)))
+        .manage(PendingFiles(Mutex::new(Vec::new())))
         .manage(WindowFiles(Mutex::new(HashMap::new())))
         .invoke_handler(tauri::generate_handler![
             open_file_dialog,
@@ -388,8 +399,8 @@ pub fn run() {
                         let _ = spawn_reader_window(handle, &canonical);
                     } else {
                         // Cold launch: stash for get_initial_file on the main window.
-                        if let Some(state) = handle.try_state::<PendingFile>() {
-                            *state.0.lock().unwrap() = Some(canonical);
+                        if let Some(state) = handle.try_state::<PendingFiles>() {
+                            state.0.lock().unwrap().push(canonical);
                         }
                     }
                 }
