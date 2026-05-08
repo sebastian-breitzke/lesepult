@@ -226,21 +226,29 @@ fn get_initial_file(state: tauri::State<PendingFiles>) -> Vec<FileResult> {
         .collect()
 }
 
-// ─── macOS Share Sheet ───────────────────────────────────────
+// ─── Default save dir ─────────────────────────────────────
+
+#[tauri::command]
+fn default_save_dir() -> Result<String, String> {
+    let home = std::env::var("HOME").map_err(|e| e.to_string())?;
+    Ok(format!("{home}/Desktop"))
+}
+
+#[tauri::command]
+async fn pick_save_directory(start_dir: Option<String>) -> Result<Option<String>, String> {
+    let mut dialog = rfd::AsyncFileDialog::new();
+    if let Some(d) = start_dir {
+        dialog = dialog.set_directory(d);
+    }
+    let folder = dialog.pick_folder().await;
+    Ok(folder.map(|f| f.path().to_string_lossy().to_string()))
+}
+
+// ─── macOS Export (PDF / RTF) ─────────────────────────────
 
 #[cfg(target_os = "macos")]
-mod macos_share {
+mod macos_export {
     use std::ffi::{c_char, c_void, CString};
-
-    #[repr(C)]
-    #[derive(Copy, Clone)]
-    struct CGPoint { x: f64, y: f64 }
-    #[repr(C)]
-    #[derive(Copy, Clone)]
-    struct CGSize { width: f64, height: f64 }
-    #[repr(C)]
-    #[derive(Copy, Clone)]
-    struct CGRect { origin: CGPoint, size: CGSize }
 
     #[link(name = "objc", kind = "dylib")]
     extern "C" {
@@ -254,50 +262,234 @@ mod macos_share {
             sel_registerName(concat!($name, "\0").as_ptr() as *const c_char)
         };
     }
-
     macro_rules! cls {
         ($name:expr) => {
             objc_getClass(concat!($name, "\0").as_ptr() as *const c_char)
         };
     }
 
-    /// Show the native macOS share picker for a file.
-    /// `ns_view` must be a valid NSView pointer. Must be called on the main thread.
-    pub unsafe fn show_picker(ns_view: *mut c_void, file_path: &str) {
-        let c_path = CString::new(file_path).unwrap();
+    type Id = *mut c_void;
 
-        // NSString from path
-        type MsgSend1 = unsafe extern "C" fn(*mut c_void, *mut c_void, *const c_char) -> *mut c_void;
-        let string_with_utf8: MsgSend1 = std::mem::transmute(objc_msgSend as *const ());
-        let path_ns = string_with_utf8(cls!("NSString"), sel!("stringWithUTF8String:"), c_path.as_ptr());
+    unsafe fn ns_string(s: &str) -> Id {
+        let c = CString::new(s).unwrap();
+        type Fn1 = unsafe extern "C" fn(Id, Id, *const c_char) -> Id;
+        let f: Fn1 = std::mem::transmute(objc_msgSend as *const ());
+        f(cls!("NSString"), sel!("stringWithUTF8String:"), c.as_ptr())
+    }
 
-        // NSURL from path string
-        type MsgSendObj = unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> *mut c_void;
-        let msg_obj: MsgSendObj = std::mem::transmute(objc_msgSend as *const ());
-        let url = msg_obj(cls!("NSURL"), sel!("fileURLWithPath:"), path_ns);
+    unsafe fn msg0(receiver: Id, selector: Id) -> Id {
+        type Fn0 = unsafe extern "C" fn(Id, Id) -> Id;
+        let f: Fn0 = std::mem::transmute(objc_msgSend as *const ());
+        f(receiver, selector)
+    }
 
-        // NSArray with the URL
-        let items = msg_obj(cls!("NSArray"), sel!("arrayWithObject:"), url);
+    unsafe fn msg1(receiver: Id, selector: Id, arg: Id) -> Id {
+        type Fn = unsafe extern "C" fn(Id, Id, Id) -> Id;
+        let f: Fn = std::mem::transmute(objc_msgSend as *const ());
+        f(receiver, selector, arg)
+    }
 
-        // NSSharingServicePicker alloc + initWithItems:
-        type MsgSendVoid = unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void;
-        let msg_void: MsgSendVoid = std::mem::transmute(objc_msgSend as *const ());
-        let picker = msg_void(cls!("NSSharingServicePicker"), sel!("alloc"));
-        let picker = msg_obj(picker, sel!("initWithItems:"), items);
+    unsafe fn msg1_bool(receiver: Id, selector: Id, arg: bool) {
+        type Fn = unsafe extern "C" fn(Id, Id, u8);
+        let f: Fn = std::mem::transmute(objc_msgSend as *const ());
+        f(receiver, selector, if arg { 1 } else { 0 });
+    }
 
-        // showRelativeToRect:ofView:preferredEdge:
-        type ShowFn = unsafe extern "C" fn(*mut c_void, *mut c_void, CGRect, *mut c_void, usize);
-        let show: ShowFn = std::mem::transmute(objc_msgSend as *const ());
-        let rect = CGRect {
-            origin: CGPoint { x: 0.0, y: 0.0 },
-            size: CGSize { width: 1.0, height: 1.0 },
-        };
-        show(picker, sel!("showRelativeToRect:ofView:preferredEdge:"), rect, ns_view, 2);
+    unsafe fn msg0_bool(receiver: Id, selector: Id) -> bool {
+        type Fn = unsafe extern "C" fn(Id, Id) -> u8;
+        let f: Fn = std::mem::transmute(objc_msgSend as *const ());
+        f(receiver, selector) != 0
+    }
+
+    unsafe fn class_name(obj: Id) -> String {
+        extern "C" {
+            fn object_getClass(obj: Id) -> Id;
+            fn class_getName(cls: Id) -> *const c_char;
+        }
+        let c = object_getClass(obj);
+        let name = class_getName(c);
+        if name.is_null() {
+            return String::new();
+        }
+        std::ffi::CStr::from_ptr(name).to_string_lossy().to_string()
+    }
+
+    /// Recursively search a view tree for a WKWebView.
+    pub unsafe fn find_wkwebview(view: Id) -> Option<Id> {
+        if view.is_null() {
+            return None;
+        }
+        if class_name(view).contains("WKWebView") {
+            return Some(view);
+        }
+        let subs = msg0(view, sel!("subviews"));
+        if subs.is_null() {
+            return None;
+        }
+        type CountFn = unsafe extern "C" fn(Id, Id) -> usize;
+        type AtFn = unsafe extern "C" fn(Id, Id, usize) -> Id;
+        let count_fn: CountFn = std::mem::transmute(objc_msgSend as *const ());
+        let at_fn: AtFn = std::mem::transmute(objc_msgSend as *const ());
+        let n = count_fn(subs, sel!("count"));
+        for i in 0..n {
+            let sub = at_fn(subs, sel!("objectAtIndex:"), i);
+            if let Some(found) = find_wkwebview(sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// Render the given WKWebView to a PDF file via NSPrintOperation.
+    /// Must run on the main thread.
+    pub unsafe fn write_pdf(webview: Id, target_path: &str) -> Result<(), String> {
+        // [[NSPrintInfo alloc] init]
+        let info = msg0(cls!("NSPrintInfo"), sel!("alloc"));
+        let info = msg0(info, sel!("init"));
+        if info.is_null() {
+            return Err("NSPrintInfo alloc failed".into());
+        }
+
+        // info.dictionary → NSMutableDictionary
+        let dict = msg0(info, sel!("dictionary"));
+        // setObject:NSPrintSaveJob forKey:NSPrintJobDisposition
+        let save_job = ns_string("NSSaveJob");
+        let job_key = ns_string("NSJobDisposition");
+        type Set2 = unsafe extern "C" fn(Id, Id, Id, Id);
+        let set: Set2 = std::mem::transmute(objc_msgSend as *const ());
+        set(dict, sel!("setObject:forKey:"), save_job, job_key);
+
+        let path_value = ns_string(target_path);
+        let path_key = ns_string("NSSavePath");
+        set(dict, sel!("setObject:forKey:"), path_value, path_key);
+
+        // Margins: small uniform (matches macOS print defaults)
+        // Skip — defaults are reasonable.
+
+        // [WKWebView printOperationWithPrintInfo:info]
+        let op = msg1(webview, sel!("printOperationWithPrintInfo:"), info);
+        if op.is_null() {
+            return Err("printOperationWithPrintInfo: returned nil".into());
+        }
+        msg1_bool(op, sel!("setShowsPrintPanel:"), false);
+        msg1_bool(op, sel!("setShowsProgressPanel:"), false);
+
+        let ok = msg0_bool(op, sel!("runOperation"));
+        if !ok {
+            return Err("PDF print operation failed".into());
+        }
+        Ok(())
+    }
+
+    /// Convert HTML to RTF and write to file. Must run on the main thread
+    /// (NSAttributedString HTML init uses WebKit).
+    pub unsafe fn write_rtf(html: &str, target_path: &str) -> Result<(), String> {
+        // NSData *htmlData = [htmlString dataUsingEncoding:NSUTF8StringEncoding]
+        let html_ns = ns_string(html);
+        type DataEnc = unsafe extern "C" fn(Id, Id, usize) -> Id;
+        let data_enc: DataEnc = std::mem::transmute(objc_msgSend as *const ());
+        let html_data = data_enc(html_ns, sel!("dataUsingEncoding:"), 4); // NSUTF8StringEncoding = 4
+        if html_data.is_null() {
+            return Err("HTML data encoding failed".into());
+        }
+
+        // options dict: { NSDocumentTypeDocumentAttribute: NSHTMLTextDocumentType,
+        //                 NSCharacterEncodingDocumentAttribute: NSUTF8StringEncoding }
+        let opts = msg0(cls!("NSMutableDictionary"), sel!("dictionary"));
+        let doc_type_key = ns_string("DocumentType");
+        let html_type_val = ns_string("NSHTML");
+        type Set2 = unsafe extern "C" fn(Id, Id, Id, Id);
+        let set: Set2 = std::mem::transmute(objc_msgSend as *const ());
+        set(opts, sel!("setObject:forKey:"), html_type_val, doc_type_key);
+
+        // NSAttributedString *attr = [[NSAttributedString alloc] initWithData:options:documentAttributes:error:]
+        let alloc_attr = msg0(cls!("NSAttributedString"), sel!("alloc"));
+        type InitWithData = unsafe extern "C" fn(Id, Id, Id, Id, Id, Id) -> Id;
+        let init_data: InitWithData = std::mem::transmute(objc_msgSend as *const ());
+        let attr = init_data(
+            alloc_attr,
+            sel!("initWithData:options:documentAttributes:error:"),
+            html_data,
+            opts,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        );
+        if attr.is_null() {
+            return Err("NSAttributedString init from HTML failed".into());
+        }
+
+        // length = attr.length, range = (0, length)
+        type LenFn = unsafe extern "C" fn(Id, Id) -> usize;
+        let len_fn: LenFn = std::mem::transmute(objc_msgSend as *const ());
+        let length = len_fn(attr, sel!("length"));
+
+        // RTF document attributes
+        let rtf_opts = msg0(cls!("NSMutableDictionary"), sel!("dictionary"));
+        let rtf_type_val = ns_string("NSRTF");
+        set(rtf_opts, sel!("setObject:forKey:"), rtf_type_val, doc_type_key);
+
+        // [attr dataFromRange:(NSRange){0,length} documentAttributes:rtf_opts]
+        #[repr(C)]
+        struct NSRange {
+            location: usize,
+            length: usize,
+        }
+        let range = NSRange { location: 0, length };
+        type DataFromRange =
+            unsafe extern "C" fn(Id, Id, NSRange, Id, Id) -> Id;
+        let data_from: DataFromRange = std::mem::transmute(objc_msgSend as *const ());
+        let rtf_data = data_from(
+            attr,
+            sel!("dataFromRange:documentAttributes:error:"),
+            range,
+            rtf_opts,
+            std::ptr::null_mut(),
+        );
+        if rtf_data.is_null() {
+            return Err("RTF conversion failed".into());
+        }
+
+        // [data writeToFile:path atomically:YES]
+        let path_ns = ns_string(target_path);
+        type WriteToFile = unsafe extern "C" fn(Id, Id, Id, u8) -> u8;
+        let write_fn: WriteToFile = std::mem::transmute(objc_msgSend as *const ());
+        let ok = write_fn(rtf_data, sel!("writeToFile:atomically:"), path_ns, 1);
+        if ok == 0 {
+            return Err(format!("Cannot write {}", target_path));
+        }
+        Ok(())
+    }
+
+    /// Put a file URL on the general pasteboard so Cmd+V in Finder/Mail/Teams
+    /// pastes the file as an attachment.
+    pub unsafe fn copy_file_url_to_pasteboard(path: &str) {
+        let pb = msg0(cls!("NSPasteboard"), sel!("generalPasteboard"));
+        if pb.is_null() {
+            return;
+        }
+        let _ = msg0(pb, sel!("clearContents"));
+
+        let path_ns = ns_string(path);
+        let url = msg1(cls!("NSURL"), sel!("fileURLWithPath:"), path_ns);
+        if url.is_null() {
+            return;
+        }
+        let arr = msg1(cls!("NSArray"), sel!("arrayWithObject:"), url);
+        let _ = msg1(pb, sel!("writeObjects:"), arr);
     }
 }
 
+// ─── PDF / RTF export commands ────────────────────────────
+
 #[tauri::command]
-async fn share_file(app: tauri::AppHandle, path: String) -> Result<(), String> {
+async fn export_pdf(
+    app: tauri::AppHandle,
+    target_path: String,
+    include_metadata: bool,
+    copy_path_to_clipboard: bool,
+) -> Result<(), String> {
+    let _ = include_metadata; // CSS class is set frontend-side; param kept for clarity
+
     #[cfg(target_os = "macos")]
     {
         use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -305,29 +497,74 @@ async fn share_file(app: tauri::AppHandle, path: String) -> Result<(), String> {
 
         let window = app
             .get_webview_window("main")
-            .ok_or("no main window")?;
+            .or_else(|| app.webview_windows().into_values().next())
+            .ok_or("no window")?;
         let handle = window.window_handle().map_err(|e| e.to_string())?;
         let ns_view = match handle.as_raw() {
-            RawWindowHandle::AppKit(h) => h.ns_view.as_ptr(),
+            RawWindowHandle::AppKit(h) => h.ns_view.as_ptr() as usize,
             _ => return Err("not macOS".into()),
         };
 
-        let ns_view_addr = ns_view as usize;
-        let path_clone = path.clone();
+        let target = target_path.clone();
+        let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
         app.run_on_main_thread(move || unsafe {
-            macos_share::show_picker(ns_view_addr as *mut std::ffi::c_void, &path_clone);
+            let view = ns_view as *mut std::ffi::c_void;
+            match macos_export::find_wkwebview(view) {
+                Some(wv) => {
+                    let res = macos_export::write_pdf(wv, &target);
+                    if res.is_ok() && copy_path_to_clipboard {
+                        macos_export::copy_file_url_to_pasteboard(&target);
+                    }
+                    let _ = tx.send(res);
+                }
+                None => {
+                    let _ = tx.send(Err("WKWebView not found in window".into()));
+                }
+            }
         })
         .map_err(|e| e.to_string())?;
+
+        rx.recv().map_err(|e| e.to_string())??;
+        Ok(())
     }
 
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = app;
-        return Err(format!("Share not supported on this platform ({})", path));
+        let _ = (app, target_path, copy_path_to_clipboard);
+        Err("PDF-Export wird nur auf macOS unterstützt.".into())
+    }
+}
+
+#[tauri::command]
+async fn export_rtf(
+    app: tauri::AppHandle,
+    target_path: String,
+    html: String,
+    copy_path_to_clipboard: bool,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let target = target_path.clone();
+        let html_clone = html.clone();
+        let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
+        app.run_on_main_thread(move || unsafe {
+            let res = macos_export::write_rtf(&html_clone, &target);
+            if res.is_ok() && copy_path_to_clipboard {
+                macos_export::copy_file_url_to_pasteboard(&target);
+            }
+            let _ = tx.send(res);
+        })
+        .map_err(|e| e.to_string())?;
+
+        rx.recv().map_err(|e| e.to_string())??;
+        Ok(())
     }
 
-    #[cfg(target_os = "macos")]
-    Ok(())
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, target_path, html, copy_path_to_clipboard);
+        Err("RTF-Export wird nur auf macOS unterstützt.".into())
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -344,9 +581,12 @@ pub fn run() {
             open_external,
             open_md_window,
             set_window_file,
-            share_file,
             read_clipboard_text,
             write_file,
+            default_save_dir,
+            pick_save_directory,
+            export_pdf,
+            export_rtf,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Lesepult");

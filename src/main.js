@@ -219,42 +219,62 @@ function render(name, content, path, modified = 0, size = 0) {
   const actions = document.createElement("span");
   actions.className = "meta-actions";
 
-  const copyBtn = makeButton("Copy as Markdown", "\u2398", () => {
-    navigator.clipboard.writeText(content);
-    flash(copyBtn, "Copied");
-  });
-
-  const richBtn = makeCopyMenu("Mit Format kopieren", "\u00B6", [
+  const shareBtn = makeShareMenu("Teilen", "\u2197\ufe0e", [
     {
-      label: "Für E-Mail",
-      run: async (btn) => {
-        const ok = await copyRichText(body.innerHTML, body.textContent || content);
-        flash(btn, ok ? "Copied" : "Failed");
-      },
+      title: "Kopieren",
+      items: [
+        {
+          label: "Markdown",
+          run: async (btn) => {
+            try {
+              await navigator.clipboard.writeText(content);
+              flash(btn, "Copied");
+            } catch (_) { flash(btn, "Failed"); }
+          },
+        },
+        {
+          label: "Plain Text",
+          run: async (btn) => {
+            try {
+              await navigator.clipboard.writeText(body.textContent || content);
+              flash(btn, "Copied");
+            } catch (_) { flash(btn, "Failed"); }
+          },
+        },
+        {
+          label: "F\u00fcr E-Mail",
+          run: async (btn) => {
+            const ok = await copyRichText(body.innerHTML, body.textContent || content);
+            flash(btn, ok ? "Copied" : "Failed");
+          },
+        },
+        {
+          label: "F\u00fcr LinkedIn",
+          run: async (btn) => {
+            try {
+              await navigator.clipboard.writeText(tokensToUnicode(tokens));
+              flash(btn, "Copied");
+            } catch (_) { flash(btn, "Failed"); }
+          },
+        },
+      ],
     },
     {
-      label: "Für LinkedIn",
-      run: async (btn) => {
-        try {
-          await navigator.clipboard.writeText(tokensToUnicode(tokens));
-          flash(btn, "Copied");
-        } catch (_) {
-          flash(btn, "Failed");
-        }
-      },
+      title: "Exportieren",
+      items: [
+        {
+          label: "RTF\u2026",
+          run: (btn) => openExportDialog("rtf", { sourceName: name, body, trigger: btn }),
+        },
+        {
+          label: "PDF\u2026",
+          run: (btn) => openExportDialog("pdf", { sourceName: name, body, trigger: btn }),
+        },
+      ],
     },
   ]);
 
-  const shareBtn = makeButton("Share", "\u21AA", async () => {
-    try {
-      await invoke("share_file", { path });
-    } catch (_) {
-      navigator.clipboard.writeText(content);
-      flash(shareBtn, "Copied");
-    }
-  });
-
-  actions.append(copyBtn, richBtn, shareBtn);
+  actions.append(shareBtn);
   metaBar.append(filename, actions);
 
   // Frontmatter metadata block
@@ -740,9 +760,9 @@ function tokensToUnicode(tokens) {
   return out.replace(/\n{3,}/g, "\n\n").trim();
 }
 
-// ─── Copy menu ───────────────────────────────────────────
+// ─── Share menu (sectioned) ──────────────────────────────
 
-function makeCopyMenu(label, icon, items) {
+function makeShareMenu(label, icon, sections) {
   const wrapper = document.createElement("span");
   wrapper.className = "meta-menu-wrapper";
 
@@ -755,27 +775,40 @@ function makeCopyMenu(label, icon, items) {
   menu.className = "meta-menu";
   menu.hidden = true;
 
-  for (const item of items) {
-    const entry = document.createElement("button");
-    entry.className = "meta-menu-item";
-    entry.textContent = item.label;
-    entry.addEventListener("click", async (e) => {
-      e.stopPropagation();
-      menu.hidden = true;
-      await item.run(btn);
-    });
-    menu.append(entry);
-  }
+  sections.forEach((section, idx) => {
+    if (idx > 0) {
+      const div = document.createElement("div");
+      div.className = "meta-menu-divider";
+      menu.append(div);
+    }
+    if (section.title) {
+      const head = document.createElement("div");
+      head.className = "meta-menu-section";
+      head.textContent = section.title;
+      menu.append(head);
+    }
+    for (const item of section.items) {
+      const entry = document.createElement("button");
+      entry.className = "meta-menu-item";
+      entry.textContent = item.label;
+      entry.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        close();
+        await item.run(btn);
+      });
+      menu.append(entry);
+    }
+  });
 
   let closeHandler = null;
-  const close = () => {
+  function close() {
     menu.hidden = true;
     if (closeHandler) {
       document.removeEventListener("click", closeHandler);
       document.removeEventListener("keydown", closeHandler);
       closeHandler = null;
     }
-  };
+  }
 
   btn.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -793,6 +826,181 @@ function makeCopyMenu(label, icon, items) {
 
   wrapper.append(btn, menu);
   return wrapper;
+}
+
+// ─── Export dialog (RTF / PDF) ───────────────────────────
+
+function defaultExportName(sourceName, ext) {
+  const base = (sourceName || "Dokument").replace(/\.(md|markdown|txt)$/i, "");
+  return `${base}.${ext}`;
+}
+
+async function openExportDialog(format, { sourceName, body, trigger }) {
+  // Default folder: Desktop. Tauri command resolves the actual path.
+  let saveDir = await invoke("default_save_dir").catch(() => null);
+  let saveDirDisplay = saveDir ?? "~/Desktop";
+  let filename = defaultExportName(sourceName, format);
+  const isPdf = format === "pdf";
+
+  const overlay = document.createElement("div");
+  overlay.className = "edit-overlay";
+
+  const dialog = document.createElement("div");
+  dialog.className = "edit-dialog share-dialog";
+
+  const header = document.createElement("div");
+  header.className = "edit-header";
+  header.textContent = isPdf ? "Als PDF exportieren" : "Als RTF exportieren";
+
+  const formEl = document.createElement("div");
+  formEl.className = "share-dialog-body";
+
+  const nameRow = document.createElement("label");
+  nameRow.className = "share-dialog-row";
+  const nameLabel = document.createElement("span");
+  nameLabel.className = "share-dialog-label";
+  nameLabel.textContent = "Speichern unter";
+  const nameInput = document.createElement("input");
+  nameInput.type = "text";
+  nameInput.className = "share-dialog-input";
+  nameInput.value = filename;
+  nameInput.spellcheck = false;
+  nameRow.append(nameLabel, nameInput);
+
+  const dirRow = document.createElement("div");
+  dirRow.className = "share-dialog-row";
+  const dirLabel = document.createElement("span");
+  dirLabel.className = "share-dialog-label";
+  dirLabel.textContent = "Speicherort";
+  const dirGroup = document.createElement("div");
+  dirGroup.className = "share-dialog-dirgroup";
+  const dirText = document.createElement("span");
+  dirText.className = "share-dialog-dir";
+  dirText.textContent = saveDirDisplay;
+  const dirBtn = document.createElement("button");
+  dirBtn.type = "button";
+  dirBtn.className = "edit-btn edit-btn-secondary";
+  dirBtn.textContent = "Ändern…";
+  dirBtn.addEventListener("click", async () => {
+    try {
+      const picked = await invoke("pick_save_directory", { startDir: saveDir });
+      if (picked) {
+        saveDir = picked;
+        saveDirDisplay = picked;
+        dirText.textContent = picked;
+      }
+    } catch (err) {
+      console.error("pick_save_directory failed:", err);
+    }
+  });
+  dirGroup.append(dirText, dirBtn);
+  dirRow.append(dirLabel, dirGroup);
+
+  const optionsWrap = document.createElement("div");
+  optionsWrap.className = "share-dialog-options";
+
+  let metadataChk = null;
+  if (isPdf) {
+    const lbl = document.createElement("label");
+    lbl.className = "share-dialog-checkbox";
+    metadataChk = document.createElement("input");
+    metadataChk.type = "checkbox";
+    metadataChk.checked = false;
+    const txt = document.createElement("span");
+    txt.textContent = "Metadaten (Frontmatter) einbeziehen";
+    lbl.append(metadataChk, txt);
+    optionsWrap.append(lbl);
+  }
+
+  const clipLbl = document.createElement("label");
+  clipLbl.className = "share-dialog-checkbox";
+  const clipChk = document.createElement("input");
+  clipChk.type = "checkbox";
+  clipChk.checked = true;
+  const clipTxt = document.createElement("span");
+  clipTxt.textContent = "Pfad in Zwischenablage kopieren";
+  clipLbl.append(clipChk, clipTxt);
+  optionsWrap.append(clipLbl);
+
+  formEl.append(nameRow, dirRow, optionsWrap);
+
+  const footer = document.createElement("div");
+  footer.className = "edit-footer";
+  const info = document.createElement("span");
+  info.className = "edit-info";
+  info.textContent = isPdf ? "Wird 1:1 wie hier dargestellt exportiert" : "Strukturierter Text für Word/Outlook";
+  const dialogActions = document.createElement("span");
+  dialogActions.className = "edit-actions";
+  const cancelBtn = document.createElement("button");
+  cancelBtn.className = "edit-btn edit-btn-secondary";
+  cancelBtn.textContent = "Abbrechen";
+  const saveBtn = document.createElement("button");
+  saveBtn.className = "edit-btn edit-btn-primary";
+  saveBtn.textContent = "Speichern";
+  dialogActions.append(cancelBtn, saveBtn);
+  footer.append(info, dialogActions);
+
+  dialog.append(header, formEl, footer);
+  overlay.append(dialog);
+
+  function closeDialog() {
+    overlay.remove();
+    document.removeEventListener("keydown", onKey);
+  }
+  function onKey(e) {
+    if (e.key === "Escape") { e.preventDefault(); closeDialog(); }
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); doSave(); }
+  }
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) closeDialog(); });
+  cancelBtn.addEventListener("click", closeDialog);
+
+  async function doSave() {
+    const finalName = nameInput.value.trim() || filename;
+    if (!saveDir) {
+      flash(saveBtn, "Kein Pfad");
+      return;
+    }
+    const targetPath = `${saveDir.replace(/\/+$/, "")}/${finalName}`;
+    saveBtn.disabled = true;
+    saveBtn.textContent = "Speichere…";
+
+    try {
+      if (isPdf) {
+        document.body.classList.add("exporting");
+        if (!metadataChk?.checked) document.body.classList.add("exporting-no-metadata");
+        // Give the layout one frame to settle before the WebView snapshots.
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+        try {
+          await invoke("export_pdf", {
+            targetPath,
+            includeMetadata: !!metadataChk?.checked,
+            copyPathToClipboard: clipChk.checked,
+          });
+        } finally {
+          document.body.classList.remove("exporting", "exporting-no-metadata");
+        }
+      } else {
+        await invoke("export_rtf", {
+          targetPath,
+          html: body.innerHTML,
+          copyPathToClipboard: clipChk.checked,
+        });
+      }
+      closeDialog();
+      flash(trigger, "Saved");
+    } catch (err) {
+      console.error("export failed:", err);
+      saveBtn.disabled = false;
+      saveBtn.textContent = "Speichern";
+      flash(saveBtn, "Fehler");
+    }
+  }
+
+  saveBtn.addEventListener("click", doSave);
+  document.addEventListener("keydown", onKey);
+  document.body.append(overlay);
+  nameInput.focus();
+  nameInput.setSelectionRange(0, nameInput.value.lastIndexOf("."));
 }
 
 // ─── Link handling ───────────────────────────────────────

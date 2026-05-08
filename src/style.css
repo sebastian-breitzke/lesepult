@@ -149,6 +149,126 @@ body {
   color: var(--lp-ink);
 }
 
+.meta-menu-section {
+  font-family: var(--lp-font-mono);
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--lp-ink-mute);
+  padding: 6px 10px 2px;
+}
+
+.meta-menu-divider {
+  height: 1px;
+  background: var(--lp-line);
+  margin: 4px 0;
+}
+
+/* ─── Share / Export dialog ───────────────────────── */
+.share-dialog {
+  width: min(480px, 90vw);
+  max-height: none;
+}
+
+.share-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  padding: 1rem;
+}
+
+.share-dialog-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.share-dialog-label {
+  font-family: var(--lp-font-mono);
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--lp-ink-mute);
+}
+
+.share-dialog-input {
+  font-family: var(--lp-font-mono);
+  font-size: 0.85rem;
+  color: var(--lp-ink);
+  background: var(--lp-code-bg);
+  border: 1px solid var(--lp-line);
+  border-radius: 4px;
+  padding: 6px 8px;
+  outline: none;
+  width: 100%;
+}
+
+.share-dialog-input:focus {
+  border-color: var(--lp-ink-mute);
+}
+
+.share-dialog-dirgroup {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--lp-code-bg);
+  border: 1px solid var(--lp-line);
+  border-radius: 4px;
+  padding: 4px 4px 4px 8px;
+}
+
+.share-dialog-dir {
+  font-family: var(--lp-font-mono);
+  font-size: 0.78rem;
+  color: var(--lp-ink-dim);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.share-dialog-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-top: 0.2rem;
+}
+
+.share-dialog-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--lp-font-mono);
+  font-size: 0.78rem;
+  color: var(--lp-ink-dim);
+  cursor: pointer;
+  user-select: none;
+}
+
+.share-dialog-checkbox input[type="checkbox"] {
+  margin: 0;
+  cursor: pointer;
+}
+
+/* ─── PDF export rendering ────────────────────────── */
+body.exporting .article-meta,
+body.exporting .code-copy,
+body.exporting .bottom-bar {
+  display: none !important;
+}
+
+body.exporting .content [data-block-index]:hover {
+  outline: none !important;
+  cursor: default !important;
+}
+
+body.exporting.exporting-no-metadata .frontmatter {
+  display: none !important;
+}
+
 /* ─── Frontmatter ────────────────────────────────── */
 .frontmatter {
   margin: 0 0 2.5rem;
