@@ -9,36 +9,8 @@ let currentFile = null; // { name, content, path, modified, size, tokens, fmOffs
 let openFiles = []; // [{ name, content, path, modified, size }]
 let activeIndex = -1;
 
-// ─── Block index tracking ────────────────────────────────
-
-let blockQueue = [];
-let blockCounter = 0;
-
-function injectAttr(html) {
-  if (blockCounter >= blockQueue.length) return html;
-  const idx = blockQueue[blockCounter++];
-  return html.replace(/^<(\w+)/, `<$1 data-block-index="${idx}"`);
-}
-
 marked.use({
   renderer: {
-    paragraph(token) {
-      const body = this.parser.parseInline(token.tokens);
-      return injectAttr(`<p>${body}</p>\n`);
-    },
-    heading(token) {
-      const body = this.parser.parseInline(token.tokens);
-      return injectAttr(`<h${token.depth}>${body}</h${token.depth}>\n`);
-    },
-    code(token) {
-      const code = token.text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-      const lang = token.lang ? ` class="language-${token.lang}"` : "";
-      return injectAttr(`<pre><code${lang}>${code}\n</code></pre>\n`);
-    },
-    blockquote(token) {
-      const body = this.parser.parse(token.tokens);
-      return injectAttr(`<blockquote>${body}</blockquote>\n`);
-    },
     list(token) {
       const tag = token.ordered ? "ol" : "ul";
       const start = token.ordered && token.start !== 1 ? ` start="${token.start}"` : "";
@@ -51,30 +23,7 @@ marked.use({
         }
         body += `<li>${itemBody}</li>\n`;
       }
-      return injectAttr(`<${tag}${start}>${body}</${tag}>\n`);
-    },
-    table(token) {
-      let header = "<tr>";
-      for (let j = 0; j < token.header.length; j++) {
-        const cell = token.header[j];
-        const align = cell.align ? ` style="text-align:${cell.align}"` : "";
-        header += `<th${align}>${this.parser.parseInline(cell.tokens)}</th>`;
-      }
-      header += "</tr>\n";
-      let body = "";
-      for (const row of token.rows) {
-        body += "<tr>";
-        for (let j = 0; j < row.length; j++) {
-          const cell = row[j];
-          const align = cell.align ? ` style="text-align:${cell.align}"` : "";
-          body += `<td${align}>${this.parser.parseInline(cell.tokens)}</td>`;
-        }
-        body += "</tr>\n";
-      }
-      return injectAttr(`<table><thead>${header}</thead><tbody>${body}</tbody></table>\n`);
-    },
-    hr() {
-      return injectAttr(`<hr>\n`);
+      return `<${tag}${start}>${body}</${tag}>\n`;
     },
   },
 });
@@ -208,14 +157,26 @@ function render(name, content, path, modified = 0, size = 0) {
   currentFile.tokens = tokens;
   currentFile.fmOffset = fmOffset;
 
-  // Build queue of token indices that produce rendered output
-  blockQueue = [];
-  blockCounter = 0;
+  // Render each visible (non-space) token individually so the visual block
+  // index ↔ token mapping is built in the same pass that emits the HTML.
+  // data-block-index is the visual index, currentFile.visibleBlocks resolves
+  // back to the token + byte offset on click.
+  const visibleBlocks = [];
+  let offset = fmOffset;
+  let html = "";
   for (let i = 0; i < tokens.length; i++) {
-    if (tokens[i].type !== "space") blockQueue.push(i);
+    const t = tokens[i];
+    if (t.type !== "space") {
+      const visIdx = visibleBlocks.length;
+      visibleBlocks.push({ tokenIndex: i, offset });
+      const blockHtml = marked.parser([t]);
+      html += blockHtml.replace(/^<(\w+)/, `<$1 data-block-index="${visIdx}"`);
+    }
+    offset += t.raw.length;
   }
+  currentFile.visibleBlocks = visibleBlocks;
 
-  const safeHtml = DOMPurify.sanitize(marked.parse(bodyContent));
+  const safeHtml = DOMPurify.sanitize(html);
 
   const article = document.createElement("article");
   article.className = "article";
@@ -437,8 +398,11 @@ const BLOCK_LABELS = {
   html: "HTML bearbeiten",
 };
 
-function openBlockEditor(tokenIndex) {
+function openBlockEditor(visIdx) {
   if (!currentFile || currentFile.path == null) return;
+  const slot = currentFile.visibleBlocks?.[visIdx];
+  if (!slot) return;
+  const { tokenIndex, offset } = slot;
   const token = currentFile.tokens[tokenIndex];
   if (!token) return;
 
@@ -481,6 +445,10 @@ function openBlockEditor(tokenIndex) {
   const actions = document.createElement("span");
   actions.className = "edit-actions";
 
+  const deleteBtn = document.createElement("button");
+  deleteBtn.className = "edit-btn edit-btn-danger";
+  deleteBtn.textContent = "Löschen";
+
   const discardBtn = document.createElement("button");
   discardBtn.className = "edit-btn edit-btn-secondary";
   discardBtn.textContent = "Verwerfen";
@@ -489,7 +457,7 @@ function openBlockEditor(tokenIndex) {
   saveBtn.className = "edit-btn edit-btn-primary";
   saveBtn.textContent = "Speichern";
 
-  actions.append(discardBtn, saveBtn);
+  actions.append(deleteBtn, discardBtn, saveBtn);
   footer.append(info, actions);
   dialog.append(header, textarea, footer);
   overlay.append(dialog);
@@ -500,6 +468,17 @@ function openBlockEditor(tokenIndex) {
     document.removeEventListener("keydown", onKey);
   }
 
+  async function writeAndRerender(newContent, btn) {
+    try {
+      await invoke("write_file", { path: currentFile.path, content: newContent });
+      close();
+      render(currentFile.name, newContent, currentFile.path, currentFile.modified, currentFile.size);
+    } catch (err) {
+      console.error("write failed:", err);
+      flash(btn, "Fehler");
+    }
+  }
+
   // Save handler
   async function save() {
     const edited = textarea.value;
@@ -508,25 +487,36 @@ function openBlockEditor(tokenIndex) {
     const trailing = trailingMatch ? trailingMatch[1] : "\n";
     const editedRaw = edited + trailing;
 
-    // Compute position of this token in the full content
-    let offset = currentFile.fmOffset;
-    for (let i = 0; i < tokenIndex; i++) {
-      offset += currentFile.tokens[i].raw.length;
-    }
     const end = offset + token.raw.length;
     const newContent =
       currentFile.content.slice(0, offset) +
       editedRaw +
       currentFile.content.slice(end);
 
-    try {
-      await invoke("write_file", { path: currentFile.path, content: newContent });
-      close();
-      render(currentFile.name, newContent, currentFile.path, currentFile.modified, currentFile.size);
-    } catch (err) {
-      console.error("save failed:", err);
-      flash(saveBtn, "Fehler");
+    await writeAndRerender(newContent, saveBtn);
+  }
+
+  // Delete handler — two-click confirm
+  let deleteArmed = false;
+  let deleteTimer = null;
+  async function onDelete() {
+    if (!deleteArmed) {
+      deleteArmed = true;
+      deleteBtn.textContent = "Wirklich löschen?";
+      deleteBtn.classList.add("edit-btn-danger-armed");
+      deleteTimer = setTimeout(() => {
+        deleteArmed = false;
+        deleteBtn.textContent = "Löschen";
+        deleteBtn.classList.remove("edit-btn-danger-armed");
+      }, 2000);
+      return;
     }
+    if (deleteTimer) clearTimeout(deleteTimer);
+    const end = offset + token.raw.length;
+    const newContent =
+      currentFile.content.slice(0, offset) +
+      currentFile.content.slice(end);
+    await writeAndRerender(newContent, deleteBtn);
   }
 
   function onKey(e) {
@@ -537,6 +527,7 @@ function openBlockEditor(tokenIndex) {
   overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
   discardBtn.addEventListener("click", close);
   saveBtn.addEventListener("click", save);
+  deleteBtn.addEventListener("click", onDelete);
   document.addEventListener("keydown", onKey);
 
   document.body.append(overlay);

@@ -305,6 +305,24 @@ body {
   filter: brightness(1.1);
 }
 
+.edit-btn-danger {
+  background: var(--lp-btn-bg);
+  border: 1px solid var(--lp-line);
+  color: #b03a2e;
+}
+
+.edit-btn-danger:hover {
+  background: #b03a2e;
+  border-color: #b03a2e;
+  color: #fff;
+}
+
+.edit-btn-danger-armed {
+  background: #b03a2e;
+  border-color: #b03a2e;
+  color: #fff;
+}
+
 .edit-btn.flashed {
   color: var(--lp-accent);
 }
