@@ -9,6 +9,9 @@
     "beforeBuildCommand": "bun run build"
   },
   "bundle": {
+    "iOS": {
+      "developmentTeam": "N73TK4MNFF"
+    },
     "fileAssociations": [
       {
         "ext": ["md", "markdown"],

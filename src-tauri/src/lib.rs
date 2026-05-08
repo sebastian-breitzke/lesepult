@@ -30,6 +30,7 @@ fn read_md(path: &Path) -> Option<FileResult> {
     Some(FileResult { name, content, path: path_str, modified, size })
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 async fn open_file_dialog() -> Vec<FileResult> {
     rfd::AsyncFileDialog::new()
@@ -74,6 +75,7 @@ fn encode_for_url(s: &str) -> String {
 /// reader-* windows are seeded at spawn time.
 struct WindowFiles(Mutex<HashMap<String, String>>);
 
+#[cfg(desktop)]
 fn spawn_reader_window(app: &tauri::AppHandle, abs_path: &str) -> tauri::Result<()> {
     use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
@@ -103,6 +105,7 @@ fn spawn_reader_window(app: &tauri::AppHandle, abs_path: &str) -> tauri::Result<
     Ok(())
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 fn open_md_window(
     app: tauri::AppHandle,
@@ -139,6 +142,7 @@ fn open_md_window(
     spawn_reader_window(&app, &path_str).map_err(|e| e.to_string())
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 fn set_window_file(
     window: tauri::Window,
@@ -167,6 +171,7 @@ fn read_file_at_path(path: String) -> Result<FileResult, String> {
     read_md(&PathBuf::from(&path)).ok_or_else(|| format!("Cannot read {path}"))
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 fn read_clipboard_text() -> Option<String> {
     arboard::Clipboard::new().ok()?.get_text().ok()
@@ -332,28 +337,43 @@ async fn share_file(app: tauri::AppHandle, path: String) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[allow(unused_imports)]
     use tauri::{Manager, RunEvent};
 
-    let app = tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .manage(PendingFiles(Mutex::new(Vec::new())))
-        .manage(WindowFiles(Mutex::new(HashMap::new())))
-        .invoke_handler(tauri::generate_handler![
-            open_file_dialog,
-            read_file_at_path,
-            get_initial_file,
-            open_external,
-            open_md_window,
-            set_window_file,
-            share_file,
-            read_clipboard_text,
-            write_file,
-        ])
+        .manage(WindowFiles(Mutex::new(HashMap::new())));
+
+    #[cfg(desktop)]
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        open_file_dialog,
+        read_file_at_path,
+        get_initial_file,
+        open_external,
+        open_md_window,
+        set_window_file,
+        share_file,
+        read_clipboard_text,
+        write_file,
+    ]);
+
+    #[cfg(mobile)]
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        read_file_at_path,
+        get_initial_file,
+        open_external,
+        share_file,
+        write_file,
+    ]);
+
+    let app = builder
         .build(tauri::generate_context!())
         .expect("error while building Lesepult");
 
     app.run(|handle, event| {
         // Clean up window->file map when a window is destroyed so focus-reuse
         // does not target a closed window.
+        #[cfg(desktop)]
         if let RunEvent::WindowEvent {
             label,
             event: tauri::WindowEvent::Destroyed,
