@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { marked, Lexer } from "marked";
 import DOMPurify from "dompurify";
@@ -8,6 +8,23 @@ const app = document.getElementById("app");
 let currentFile = null; // { name, content, path, modified, size, tokens, fmOffset }
 let openFiles = []; // [{ name, content, path, modified, size }]
 let activeIndex = -1;
+
+function escapeAttr(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+}
+
+// Resolve relative image refs against the current file's directory, then
+// rewrite to asset:// so the Tauri webview can load them. Remote URLs and
+// data: URIs pass through unchanged.
+function resolveImageSrc(href) {
+  if (!href) return href;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(href)) return href; // http(s):, data:, file:
+  const filePath = currentFile?.path;
+  if (!filePath) return href;
+  const dir = filePath.replace(/[^/]+$/, "");
+  const abs = href.startsWith("/") ? href : dir + href;
+  return convertFileSrc(abs, "asset");
+}
 
 marked.use({
   renderer: {
@@ -24,6 +41,12 @@ marked.use({
         body += `<li>${itemBody}</li>\n`;
       }
       return `<${tag}${start}>${body}</${tag}>\n`;
+    },
+    image(token) {
+      const src = escapeAttr(resolveImageSrc(token.href));
+      const alt = escapeAttr(token.text ?? "");
+      const title = token.title ? ` title="${escapeAttr(token.title)}"` : "";
+      return `<img src="${src}" alt="${alt}"${title}>`;
     },
   },
 });
@@ -176,7 +199,11 @@ function render(name, content, path, modified = 0, size = 0) {
   }
   currentFile.visibleBlocks = visibleBlocks;
 
-  const safeHtml = DOMPurify.sanitize(html);
+  const safeHtml = DOMPurify.sanitize(html, {
+    // Allow asset:// (Tauri asset protocol) URLs in img src etc.
+    ALLOWED_URI_REGEXP:
+      /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|asset):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
+  });
 
   const article = document.createElement("article");
   article.className = "article";
