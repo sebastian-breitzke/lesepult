@@ -254,9 +254,27 @@ body {
 }
 
 /* ─── PDF export rendering ────────────────────────── */
+/* Force light theme during export — the PDF should look like the light
+   reader regardless of the system color scheme. */
+body.exporting {
+  --lp-bg: #fffff8;
+  --lp-ink: #111;
+  --lp-ink-dim: #555;
+  --lp-ink-mute: #999;
+  --lp-line: #e0ddd5;
+  --lp-accent: #a00000;
+  --lp-code-bg: rgba(0, 0, 0, 0.035);
+  --lp-btn-bg: rgba(0, 0, 0, 0.05);
+  --lp-btn-hover: rgba(0, 0, 0, 0.1);
+  color-scheme: light;
+}
+
 body.exporting .article-meta,
 body.exporting .code-copy,
-body.exporting .bottom-bar {
+body.exporting .bottom-bar,
+body.exporting .tab-bar,
+body.exporting .status-bar,
+body.exporting .edit-overlay {
   display: none !important;
 }
 
@@ -267,6 +285,31 @@ body.exporting .content [data-block-index]:hover {
 
 body.exporting.exporting-no-metadata .frontmatter {
   display: none !important;
+}
+
+/* Paged export: force the document to A4 content width so createPDF can
+   slice it into A4 page rects (794×1123 CSS px @ 96 DPI). */
+body.exporting-paged {
+  width: 794px !important;
+  min-width: 794px;
+  max-width: 794px;
+  margin: 0 !important;
+  overflow: visible !important;
+}
+body.exporting-paged .article {
+  max-width: none;
+  width: 794px;
+  margin: 0;
+  padding: 68px 68px 68px; /* ~18mm margin on all sides */
+}
+body.exporting-paged img,
+body.exporting-paged figure,
+body.exporting-paged pre {
+  max-width: 100%;
+}
+body.exporting-paged pre {
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 /* ─── Frontmatter ────────────────────────────────── */
@@ -386,6 +429,12 @@ body.exporting.exporting-no-metadata .frontmatter {
   color: var(--lp-ink-mute);
   flex: 1;
   min-width: 0;
+}
+
+.edit-info-error {
+  color: #c44;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .edit-actions {

@@ -289,37 +289,26 @@ mod macos_export {
         f(receiver, selector, arg)
     }
 
-    unsafe fn msg1_bool(receiver: Id, selector: Id, arg: bool) {
-        type Fn = unsafe extern "C" fn(Id, Id, u8);
-        let f: Fn = std::mem::transmute(objc_msgSend as *const ());
-        f(receiver, selector, if arg { 1 } else { 0 });
-    }
-
-    unsafe fn msg0_bool(receiver: Id, selector: Id) -> bool {
-        type Fn = unsafe extern "C" fn(Id, Id) -> u8;
-        let f: Fn = std::mem::transmute(objc_msgSend as *const ());
-        f(receiver, selector) != 0
-    }
-
-    unsafe fn class_name(obj: Id) -> String {
-        extern "C" {
-            fn object_getClass(obj: Id) -> Id;
-            fn class_getName(cls: Id) -> *const c_char;
+    unsafe fn is_kind_of_wkwebview(view: Id) -> bool {
+        let wk_class = cls!("WKWebView");
+        if wk_class.is_null() {
+            return false;
         }
-        let c = object_getClass(obj);
-        let name = class_getName(c);
-        if name.is_null() {
-            return String::new();
-        }
-        std::ffi::CStr::from_ptr(name).to_string_lossy().to_string()
+        type IsKind = unsafe extern "C" fn(Id, Id, Id) -> u8;
+        let f: IsKind = std::mem::transmute(objc_msgSend as *const ());
+        f(view, sel!("isKindOfClass:"), wk_class) != 0
     }
 
-    /// Recursively search a view tree for a WKWebView.
+    /// Recursively search a view tree for a WKWebView (or subclass, e.g. WryWebView).
     pub unsafe fn find_wkwebview(view: Id) -> Option<Id> {
         if view.is_null() {
             return None;
         }
-        if class_name(view).contains("WKWebView") {
+        // Match by class hierarchy — Tauri/Wry uses a `WryWebView` subclass
+        // of WKWebView. A name substring like "WebView" also matches the
+        // outer `WryWebViewParent` NSView container, so we rely on
+        // isKindOfClass: only.
+        if is_kind_of_wkwebview(view) {
             return Some(view);
         }
         let subs = msg0(view, sel!("subviews"));
@@ -340,45 +329,49 @@ mod macos_export {
         None
     }
 
-    /// Render the given WKWebView to a PDF file via NSPrintOperation.
-    /// Must run on the main thread.
-    pub unsafe fn write_pdf(webview: Id, target_path: &str) -> Result<(), String> {
-        // [[NSPrintInfo alloc] init]
-        let info = msg0(cls!("NSPrintInfo"), sel!("alloc"));
-        let info = msg0(info, sel!("init"));
-        if info.is_null() {
-            return Err("NSPrintInfo alloc failed".into());
+    extern "C" {
+        fn lesepult_export_pdf(
+            webview: *mut c_void,
+            target_path: *const c_char,
+            page_width: f64,
+            page_height: f64,
+            total_height: f64,
+            err_out: *mut *mut c_char,
+        ) -> i32;
+        fn free(p: *mut c_void);
+    }
+
+    /// Render the given WKWebView to a paginated PDF via
+    /// createPDFWithConfiguration:completionHandler:, one rect per page,
+    /// stitched together with PDFKit. Must run on the main thread.
+    pub unsafe fn write_pdf(
+        webview: Id,
+        target_path: &str,
+        page_width: f64,
+        page_height: f64,
+        total_height: f64,
+    ) -> Result<(), String> {
+        let cpath = CString::new(target_path).map_err(|e| e.to_string())?;
+        let mut err_ptr: *mut c_char = std::ptr::null_mut();
+        let rc = lesepult_export_pdf(
+            webview,
+            cpath.as_ptr(),
+            page_width,
+            page_height,
+            total_height,
+            &mut err_ptr,
+        );
+        if rc == 0 {
+            return Ok(());
         }
-
-        // info.dictionary → NSMutableDictionary
-        let dict = msg0(info, sel!("dictionary"));
-        // setObject:NSPrintSaveJob forKey:NSPrintJobDisposition
-        let save_job = ns_string("NSSaveJob");
-        let job_key = ns_string("NSJobDisposition");
-        type Set2 = unsafe extern "C" fn(Id, Id, Id, Id);
-        let set: Set2 = std::mem::transmute(objc_msgSend as *const ());
-        set(dict, sel!("setObject:forKey:"), save_job, job_key);
-
-        let path_value = ns_string(target_path);
-        let path_key = ns_string("NSSavePath");
-        set(dict, sel!("setObject:forKey:"), path_value, path_key);
-
-        // Margins: small uniform (matches macOS print defaults)
-        // Skip — defaults are reasonable.
-
-        // [WKWebView printOperationWithPrintInfo:info]
-        let op = msg1(webview, sel!("printOperationWithPrintInfo:"), info);
-        if op.is_null() {
-            return Err("printOperationWithPrintInfo: returned nil".into());
-        }
-        msg1_bool(op, sel!("setShowsPrintPanel:"), false);
-        msg1_bool(op, sel!("setShowsProgressPanel:"), false);
-
-        let ok = msg0_bool(op, sel!("runOperation"));
-        if !ok {
-            return Err("PDF print operation failed".into());
-        }
-        Ok(())
+        let msg = if err_ptr.is_null() {
+            format!("PDF export failed (code {rc})")
+        } else {
+            let s = std::ffi::CStr::from_ptr(err_ptr).to_string_lossy().into_owned();
+            free(err_ptr as *mut c_void);
+            format!("{s} (code {rc})")
+        };
+        Err(msg)
     }
 
     /// Convert HTML to RTF and write to file. Must run on the main thread
@@ -485,6 +478,9 @@ mod macos_export {
 async fn export_pdf(
     app: tauri::AppHandle,
     target_path: String,
+    page_width: f64,
+    page_height: f64,
+    total_height: f64,
     include_metadata: bool,
     copy_path_to_clipboard: bool,
 ) -> Result<(), String> {
@@ -511,7 +507,7 @@ async fn export_pdf(
             let view = ns_view as *mut std::ffi::c_void;
             match macos_export::find_wkwebview(view) {
                 Some(wv) => {
-                    let res = macos_export::write_pdf(wv, &target);
+                    let res = macos_export::write_pdf(wv, &target, page_width, page_height, total_height);
                     if res.is_ok() && copy_path_to_clipboard {
                         macos_export::copy_file_url_to_pasteboard(&target);
                     }
@@ -530,7 +526,7 @@ async fn export_pdf(
 
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (app, target_path, copy_path_to_clipboard);
+        let _ = (app, target_path, page_width, page_height, total_height, copy_path_to_clipboard);
         Err("PDF-Export wird nur auf macOS unterstützt.".into())
     }
 }

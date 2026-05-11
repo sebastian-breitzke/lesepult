@@ -263,6 +263,10 @@ function render(name, content, path, modified = 0, size = 0) {
       title: "Exportieren",
       items: [
         {
+          label: "HTML\u2026",
+          run: (btn) => openExportDialog("html", { sourceName: name, body, trigger: btn }),
+        },
+        {
           label: "RTF\u2026",
           run: (btn) => openExportDialog("rtf", { sourceName: name, body, trigger: btn }),
         },
@@ -828,6 +832,91 @@ function makeShareMenu(label, icon, sections) {
   return wrapper;
 }
 
+// ─── Standalone HTML export ───────────────────────────────
+//
+// Build a self-contained .html file: the rendered article body + all inline
+// stylesheets, with asset:// images replaced by data: URIs so the file
+// works without the app.
+
+async function fetchAsDataUrl(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`fetch ${url}: ${res.status}`);
+  const blob = await res.blob();
+  return await new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(blob);
+  });
+}
+
+async function buildStandaloneHtml(bodyEl, sourceName) {
+  // Pull the surrounding .article so we keep the frontmatter block + structure.
+  const article = bodyEl.closest(".article") || bodyEl;
+  const clone = article.cloneNode(true);
+
+  // Strip interactive-only chrome that doesn't belong in a static export.
+  clone.querySelectorAll(".code-copy, .article-meta, [data-block-index] .edit-overlay")
+    .forEach((el) => el.remove());
+  clone.querySelectorAll("[data-block-index]").forEach((el) => {
+    el.removeAttribute("data-block-index");
+  });
+
+  // Inline asset:// images.
+  const imgs = Array.from(clone.querySelectorAll("img"));
+  await Promise.all(
+    imgs.map(async (img) => {
+      const src = img.getAttribute("src") || "";
+      if (!src) return;
+      // Skip already-inline data URIs and external http(s) the user expects to stay linked.
+      if (src.startsWith("data:")) return;
+      // Asset protocol comes through as asset://, http://asset.localhost, etc.
+      const isAsset = src.startsWith("asset:") || src.includes("asset.localhost");
+      if (!isAsset) return;
+      try {
+        img.src = await fetchAsDataUrl(src);
+      } catch (err) {
+        console.warn("inline failed:", src, err);
+      }
+    }),
+  );
+
+  // Gather every stylesheet rendered into the live document. Inlining the
+  // whole computed CSS ensures the export matches the reader's typography.
+  const css = Array.from(document.styleSheets)
+    .map((sheet) => {
+      try {
+        return Array.from(sheet.cssRules).map((r) => r.cssText).join("\n");
+      } catch (_) {
+        return ""; // cross-origin sheet → unreadable, skip
+      }
+    })
+    .filter(Boolean)
+    .join("\n\n");
+
+  const title = (sourceName || "Lesepult").replace(/\.(md|markdown|txt)$/i, "");
+  const escapedTitle = title
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+
+  return `<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapedTitle}</title>
+<style>
+${css}
+</style>
+</head>
+<body>
+${clone.outerHTML}
+</body>
+</html>
+`;
+}
+
 // ─── Export dialog (RTF / PDF) ───────────────────────────
 
 function defaultExportName(sourceName, ext) {
@@ -841,6 +930,7 @@ async function openExportDialog(format, { sourceName, body, trigger }) {
   let saveDirDisplay = saveDir ?? "~/Desktop";
   let filename = defaultExportName(sourceName, format);
   const isPdf = format === "pdf";
+  const isHtml = format === "html";
 
   const overlay = document.createElement("div");
   overlay.className = "edit-overlay";
@@ -850,7 +940,11 @@ async function openExportDialog(format, { sourceName, body, trigger }) {
 
   const header = document.createElement("div");
   header.className = "edit-header";
-  header.textContent = isPdf ? "Als PDF exportieren" : "Als RTF exportieren";
+  header.textContent = isPdf
+    ? "Als PDF exportieren"
+    : isHtml
+    ? "Als HTML exportieren"
+    : "Als RTF exportieren";
 
   const formEl = document.createElement("div");
   formEl.className = "share-dialog-body";
@@ -900,6 +994,7 @@ async function openExportDialog(format, { sourceName, body, trigger }) {
   optionsWrap.className = "share-dialog-options";
 
   let metadataChk = null;
+  let singlePageChk = null;
   if (isPdf) {
     const lbl = document.createElement("label");
     lbl.className = "share-dialog-checkbox";
@@ -910,6 +1005,16 @@ async function openExportDialog(format, { sourceName, body, trigger }) {
     txt.textContent = "Metadaten (Frontmatter) einbeziehen";
     lbl.append(metadataChk, txt);
     optionsWrap.append(lbl);
+
+    const pageLbl = document.createElement("label");
+    pageLbl.className = "share-dialog-checkbox";
+    singlePageChk = document.createElement("input");
+    singlePageChk.type = "checkbox";
+    singlePageChk.checked = false;
+    const pageTxt = document.createElement("span");
+    pageTxt.textContent = "Als eine durchgehende Seite (A4-Breite, kein Umbruch)";
+    pageLbl.append(singlePageChk, pageTxt);
+    optionsWrap.append(pageLbl);
   }
 
   const clipLbl = document.createElement("label");
@@ -928,7 +1033,11 @@ async function openExportDialog(format, { sourceName, body, trigger }) {
   footer.className = "edit-footer";
   const info = document.createElement("span");
   info.className = "edit-info";
-  info.textContent = isPdf ? "Wird 1:1 wie hier dargestellt exportiert" : "Strukturierter Text für Word/Outlook";
+  info.textContent = isPdf
+    ? "Wird 1:1 wie hier dargestellt exportiert"
+    : isHtml
+    ? "Eigenständige HTML-Datei mit eingebetteten Bildern und Stilen"
+    : "Strukturierter Text für Word/Outlook";
   const dialogActions = document.createElement("span");
   dialogActions.className = "edit-actions";
   const cancelBtn = document.createElement("button");
@@ -966,18 +1075,37 @@ async function openExportDialog(format, { sourceName, body, trigger }) {
 
     try {
       if (isPdf) {
-        document.body.classList.add("exporting");
+        // A4 at 96 DPI in CSS pixels.
+        const PAGE_WIDTH = 794;
+        const PAGE_HEIGHT = 1123;
+        document.body.classList.add("exporting", "exporting-paged");
         if (!metadataChk?.checked) document.body.classList.add("exporting-no-metadata");
-        // Give the layout one frame to settle before the WebView snapshots.
+        // Let the forced light theme + width override paint before measuring.
         await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+        const totalHeight = Math.max(
+          document.documentElement.scrollHeight,
+          document.body.scrollHeight,
+        );
+        const singlePage = !!singlePageChk?.checked;
         try {
           await invoke("export_pdf", {
             targetPath,
+            pageWidth: PAGE_WIDTH,
+            // One huge rect when single-page is requested → ObjC loop produces
+            // exactly one PDF page covering the full document.
+            pageHeight: singlePage ? totalHeight : PAGE_HEIGHT,
+            totalHeight,
             includeMetadata: !!metadataChk?.checked,
             copyPathToClipboard: clipChk.checked,
           });
         } finally {
-          document.body.classList.remove("exporting", "exporting-no-metadata");
+          document.body.classList.remove("exporting", "exporting-paged", "exporting-no-metadata");
+        }
+      } else if (isHtml) {
+        const html = await buildStandaloneHtml(body, sourceName);
+        await invoke("write_file", { path: targetPath, content: html });
+        if (clipChk.checked) {
+          try { await navigator.clipboard.writeText(targetPath); } catch (_) {}
         }
       } else {
         await invoke("export_rtf", {
@@ -992,7 +1120,9 @@ async function openExportDialog(format, { sourceName, body, trigger }) {
       console.error("export failed:", err);
       saveBtn.disabled = false;
       saveBtn.textContent = "Speichern";
-      flash(saveBtn, "Fehler");
+      const msg = typeof err === "string" ? err : err?.message || String(err);
+      info.textContent = `Fehler: ${msg}`;
+      info.classList.add("edit-info-error");
     }
   }
 

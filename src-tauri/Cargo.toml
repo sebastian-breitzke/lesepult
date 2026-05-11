@@ -1,6 +1,6 @@
 [package]
 name = "lesepult"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
 
 [lib]
@@ -9,6 +9,7 @@ crate-type = ["staticlib", "cdylib", "lib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+cc = "1"
 
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset"] }
