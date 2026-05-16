@@ -1,9 +1,13 @@
+use notify::{RecommendedWatcher, RecursiveMode};
+use notify_debouncer_full::{new_debouncer, DebounceEventResult, Debouncer, RecommendedCache};
 use serde::Serialize;
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::Duration;
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct FileResult {
     name: String,
     content: String,
@@ -74,6 +78,70 @@ fn encode_for_url(s: &str) -> String {
 /// reader-* windows are seeded at spawn time.
 struct WindowFiles(Mutex<HashMap<String, String>>);
 
+/// One filesystem watcher per window. Dropping the Debouncer stops it,
+/// so swapping the entry is enough to retarget when the window's file changes.
+struct WindowWatchers(
+    Mutex<HashMap<String, Debouncer<RecommendedWatcher, RecommendedCache>>>,
+);
+
+/// Watch the parent directory of `path` and emit `file-changed` to `label`
+/// whenever an event names the same filename. We watch the directory rather
+/// than the file because many editors do atomic save = write-temp + rename,
+/// which invalidates a file-level watch on the original inode.
+fn start_watcher(
+    app: &tauri::AppHandle,
+    label: &str,
+    path: &Path,
+) -> notify::Result<Debouncer<RecommendedWatcher, RecommendedCache>> {
+    use tauri::Emitter;
+
+    let parent = path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    let target = path.to_path_buf();
+    let target_name: Option<OsString> = target.file_name().map(|n| n.to_os_string());
+    let app_handle = app.clone();
+    let label_owned = label.to_string();
+
+    let mut debouncer = new_debouncer(
+        Duration::from_millis(150),
+        None,
+        move |res: DebounceEventResult| {
+            let Ok(events) = res else { return };
+            let touched = events.iter().any(|ev| {
+                ev.event
+                    .paths
+                    .iter()
+                    .any(|p| p.file_name().map(|n| n.to_os_string()) == target_name)
+            });
+            if !touched {
+                return;
+            }
+            if let Some(file) = read_md(&target) {
+                let _ = app_handle.emit_to(label_owned.as_str(), "file-changed", file);
+            }
+        },
+    )?;
+    debouncer.watch(&parent, RecursiveMode::NonRecursive)?;
+    Ok(debouncer)
+}
+
+fn swap_watcher(app: &tauri::AppHandle, label: &str, path: Option<&Path>) {
+    use tauri::Manager;
+    let Some(state) = app.try_state::<WindowWatchers>() else { return };
+    let mut map = state.0.lock().unwrap();
+    map.remove(label);
+    if let Some(p) = path {
+        match start_watcher(app, label, p) {
+            Ok(d) => {
+                map.insert(label.to_string(), d);
+            }
+            Err(e) => eprintln!("watch {label} failed: {e}"),
+        }
+    }
+}
+
 fn spawn_reader_window(app: &tauri::AppHandle, abs_path: &str) -> tauri::Result<()> {
     use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
@@ -141,25 +209,27 @@ fn open_md_window(
 
 #[tauri::command]
 fn set_window_file(
+    app: tauri::AppHandle,
     window: tauri::Window,
     path: Option<String>,
     state: tauri::State<WindowFiles>,
 ) {
     let label = window.label().to_string();
-    let mut map = state.0.lock().unwrap();
-    match path {
-        Some(p) => {
-            // Store canonical path so focus-reuse matches regardless of how the
-            // path was originally spelled (CLI, Finder, drag-drop, link-relative).
-            let canonical = std::fs::canonicalize(&p)
-                .map(|cp| cp.to_string_lossy().to_string())
-                .unwrap_or(p);
-            map.insert(label, canonical);
-        }
-        None => {
-            map.remove(&label);
+    let canonical_path: Option<PathBuf> = path.as_ref().map(|p| {
+        std::fs::canonicalize(p).unwrap_or_else(|_| PathBuf::from(p))
+    });
+    {
+        let mut map = state.0.lock().unwrap();
+        match &canonical_path {
+            Some(cp) => {
+                map.insert(label.clone(), cp.to_string_lossy().to_string());
+            }
+            None => {
+                map.remove(&label);
+            }
         }
     }
+    swap_watcher(&app, &label, canonical_path.as_deref());
 }
 
 #[tauri::command]
@@ -570,6 +640,7 @@ pub fn run() {
     let app = tauri::Builder::default()
         .manage(PendingFiles(Mutex::new(Vec::new())))
         .manage(WindowFiles(Mutex::new(HashMap::new())))
+        .manage(WindowWatchers(Mutex::new(HashMap::new())))
         .invoke_handler(tauri::generate_handler![
             open_file_dialog,
             read_file_at_path,
@@ -597,6 +668,9 @@ pub fn run() {
         } = &event
         {
             if let Some(state) = handle.try_state::<WindowFiles>() {
+                state.0.lock().unwrap().remove(label);
+            }
+            if let Some(state) = handle.try_state::<WindowWatchers>() {
                 state.0.lock().unwrap().remove(label);
             }
         }

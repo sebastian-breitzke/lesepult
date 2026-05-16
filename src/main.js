@@ -1269,6 +1269,25 @@ function getFileFromHash() {
   // Register open-file listener BEFORE checking initial file
   await listen("open-file", (event) => openPath(event.payload));
 
+  // Auto-refresh when the watched file changes on disk.
+  await listen("file-changed", (event) => {
+    const updated = event.payload;
+    if (!updated?.path) return;
+    const idx = openFiles.findIndex((f) => f.path === updated.path);
+    if (idx === -1) return;
+    const existing = openFiles[idx];
+    if (existing.modified === updated.modified && existing.content === updated.content) return;
+    Object.assign(existing, updated);
+    if (idx === activeIndex) {
+      const sx = window.scrollX;
+      const sy = window.scrollY;
+      renderActive();
+      window.scrollTo(sx, sy);
+    } else {
+      renderBottomBar();
+    }
+  });
+
   // New-window path: file passed via URL hash (#file=<encoded path>)
   const hashed = getFileFromHash();
   if (hashed) {
