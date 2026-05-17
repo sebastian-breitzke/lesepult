@@ -924,6 +924,59 @@ function defaultExportName(sourceName, ext) {
   return `${base}.${ext}`;
 }
 
+// Single export implementation shared by the GUI dialog and the headless
+// CLI path. `mode` ("stream" | "paged") only affects PDF: stream renders one
+// continuous A4-width page with no breaks, paged slices into A4 pages.
+async function performExport({
+  format,
+  body,
+  sourceName,
+  targetPath,
+  mode,
+  includeMetadata,
+  copyPathToClipboard,
+}) {
+  if (format === "pdf") {
+    // A4 at 96 DPI in CSS pixels.
+    const PAGE_WIDTH = 794;
+    const PAGE_HEIGHT = 1123;
+    document.body.classList.add("exporting", "exporting-paged");
+    if (!includeMetadata) document.body.classList.add("exporting-no-metadata");
+    // Let the forced light theme + width override paint before measuring.
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    const totalHeight = Math.max(
+      document.documentElement.scrollHeight,
+      document.body.scrollHeight,
+    );
+    try {
+      await invoke("export_pdf", {
+        targetPath,
+        pageWidth: PAGE_WIDTH,
+        // One huge rect for stream → ObjC loop produces exactly one PDF
+        // page covering the full document.
+        pageHeight: mode === "stream" ? totalHeight : PAGE_HEIGHT,
+        totalHeight,
+        includeMetadata,
+        copyPathToClipboard,
+      });
+    } finally {
+      document.body.classList.remove("exporting", "exporting-paged", "exporting-no-metadata");
+    }
+  } else if (format === "html") {
+    const html = await buildStandaloneHtml(body, sourceName);
+    await invoke("write_file", { path: targetPath, content: html });
+    if (copyPathToClipboard) {
+      try { await navigator.clipboard.writeText(targetPath); } catch (_) {}
+    }
+  } else {
+    await invoke("export_rtf", {
+      targetPath,
+      html: body.innerHTML,
+      copyPathToClipboard,
+    });
+  }
+}
+
 async function openExportDialog(format, { sourceName, body, trigger }) {
   // Default folder: Desktop. Tauri command resolves the actual path.
   let saveDir = await invoke("default_save_dir").catch(() => null);
@@ -1074,46 +1127,15 @@ async function openExportDialog(format, { sourceName, body, trigger }) {
     saveBtn.textContent = "Speichere…";
 
     try {
-      if (isPdf) {
-        // A4 at 96 DPI in CSS pixels.
-        const PAGE_WIDTH = 794;
-        const PAGE_HEIGHT = 1123;
-        document.body.classList.add("exporting", "exporting-paged");
-        if (!metadataChk?.checked) document.body.classList.add("exporting-no-metadata");
-        // Let the forced light theme + width override paint before measuring.
-        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-        const totalHeight = Math.max(
-          document.documentElement.scrollHeight,
-          document.body.scrollHeight,
-        );
-        const singlePage = !!singlePageChk?.checked;
-        try {
-          await invoke("export_pdf", {
-            targetPath,
-            pageWidth: PAGE_WIDTH,
-            // One huge rect when single-page is requested → ObjC loop produces
-            // exactly one PDF page covering the full document.
-            pageHeight: singlePage ? totalHeight : PAGE_HEIGHT,
-            totalHeight,
-            includeMetadata: !!metadataChk?.checked,
-            copyPathToClipboard: clipChk.checked,
-          });
-        } finally {
-          document.body.classList.remove("exporting", "exporting-paged", "exporting-no-metadata");
-        }
-      } else if (isHtml) {
-        const html = await buildStandaloneHtml(body, sourceName);
-        await invoke("write_file", { path: targetPath, content: html });
-        if (clipChk.checked) {
-          try { await navigator.clipboard.writeText(targetPath); } catch (_) {}
-        }
-      } else {
-        await invoke("export_rtf", {
-          targetPath,
-          html: body.innerHTML,
-          copyPathToClipboard: clipChk.checked,
-        });
-      }
+      await performExport({
+        format: isPdf ? "pdf" : isHtml ? "html" : "rtf",
+        body,
+        sourceName,
+        targetPath,
+        mode: singlePageChk?.checked ? "stream" : "paged",
+        includeMetadata: !!metadataChk?.checked,
+        copyPathToClipboard: clipChk.checked,
+      });
       closeDialog();
       flash(trigger, "Saved");
     } catch (err) {
@@ -1287,6 +1309,35 @@ function getFileFromHash() {
       renderBottomBar();
     }
   });
+
+  // Headless CLI export: render the input, write the file, exit.
+  let exportReq = null;
+  try {
+    exportReq = await invoke("get_export_request");
+  } catch (_) {}
+  if (exportReq) {
+    try {
+      const r = await invoke("read_file_at_path", { path: exportReq.input });
+      addFile(r);
+      await new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res)));
+      const bodyEl = document.querySelector(".content");
+      if (!bodyEl) throw new Error("nothing rendered");
+      await performExport({
+        format: exportReq.format,
+        body: bodyEl,
+        sourceName: r.name,
+        targetPath: exportReq.out,
+        mode: exportReq.mode,
+        includeMetadata: !!exportReq.metadata,
+        copyPathToClipboard: false,
+      });
+      await invoke("finish_export", { success: true, message: exportReq.out });
+    } catch (err) {
+      const msg = typeof err === "string" ? err : err?.message || String(err);
+      await invoke("finish_export", { success: false, message: msg });
+    }
+    return;
+  }
 
   // New-window path: file passed via URL hash (#file=<encoded path>)
   const hashed = getFileFromHash();

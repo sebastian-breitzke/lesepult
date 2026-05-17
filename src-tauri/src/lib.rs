@@ -275,6 +275,120 @@ fn open_external(url: String) -> Result<(), String> {
 
 struct PendingFiles(Mutex<Vec<String>>);
 
+// ─── Headless export request (CLI) ────────────────────────
+
+#[derive(Serialize, Clone)]
+struct ExportRequest {
+    format: String, // "pdf" | "rtf" | "html"
+    mode: String,   // "stream" | "paged" (pdf only; ignored otherwise)
+    input: String,  // absolute path to the source .md
+    out: String,    // absolute target path
+    metadata: bool,  // include frontmatter block (pdf only)
+}
+
+struct ExportState(Mutex<Option<ExportRequest>>);
+
+fn abs_path(raw: &str) -> String {
+    let p = PathBuf::from(raw);
+    if p.is_absolute() {
+        std::fs::canonicalize(&p)
+            .unwrap_or(p)
+            .to_string_lossy()
+            .to_string()
+    } else {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let joined = cwd.join(&p);
+        std::fs::canonicalize(&joined)
+            .unwrap_or(joined)
+            .to_string_lossy()
+            .to_string()
+    }
+}
+
+/// Parse `--export <pdf|rtf|html> [--mode <stream|paged>] [--out <path>]
+/// [--metadata] <input.md>` from argv. Returns None when `--export` is absent
+/// or the format is unknown, so a normal launch is unaffected.
+fn parse_export_args() -> Option<ExportRequest> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut format: Option<String> = None;
+    let mut mode = "stream".to_string();
+    let mut out: Option<String> = None;
+    let mut metadata = false;
+    let mut input: Option<String> = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--export" => {
+                format = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--mode" => {
+                if let Some(m) = args.get(i + 1) {
+                    mode = m.clone();
+                }
+                i += 2;
+            }
+            "--out" => {
+                out = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--metadata" => {
+                metadata = true;
+                i += 1;
+            }
+            a => {
+                if input.is_none() && (a.ends_with(".md") || a.ends_with(".markdown")) {
+                    input = Some(a.to_string());
+                }
+                i += 1;
+            }
+        }
+    }
+
+    let format = format?;
+    if !matches!(format.as_str(), "pdf" | "rtf" | "html") {
+        return None;
+    }
+    let input = input?;
+    if !matches!(mode.as_str(), "stream" | "paged") {
+        mode = "stream".to_string();
+    }
+    let input_abs = abs_path(&input);
+    let out_abs = match out {
+        Some(o) => abs_path(&o),
+        None => {
+            let mut p = PathBuf::from(&input_abs);
+            p.set_extension(&format);
+            p.to_string_lossy().to_string()
+        }
+    };
+
+    Some(ExportRequest {
+        format,
+        mode,
+        input: input_abs,
+        out: out_abs,
+        metadata,
+    })
+}
+
+#[tauri::command]
+fn get_export_request(state: tauri::State<ExportState>) -> Option<ExportRequest> {
+    state.0.lock().unwrap().clone()
+}
+
+#[tauri::command]
+fn finish_export(app: tauri::AppHandle, success: bool, message: Option<String>) {
+    let msg = message.unwrap_or_default();
+    if success {
+        println!("{msg}");
+    } else {
+        eprintln!("lesepult export failed: {msg}");
+    }
+    app.exit(if success { 0 } else { 1 });
+}
+
 #[tauri::command]
 fn get_initial_file(state: tauri::State<PendingFiles>) -> Vec<FileResult> {
     // Drain paths stored by RunEvent::Opened (macOS file association)
@@ -641,10 +755,13 @@ pub fn run() {
         .manage(PendingFiles(Mutex::new(Vec::new())))
         .manage(WindowFiles(Mutex::new(HashMap::new())))
         .manage(WindowWatchers(Mutex::new(HashMap::new())))
+        .manage(ExportState(Mutex::new(parse_export_args())))
         .invoke_handler(tauri::generate_handler![
             open_file_dialog,
             read_file_at_path,
             get_initial_file,
+            get_export_request,
+            finish_export,
             open_external,
             open_md_window,
             set_window_file,
